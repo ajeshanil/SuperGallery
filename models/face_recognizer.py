@@ -13,11 +13,12 @@ try:
     import torch
     from PIL import Image as _PILImage
     _FACENET_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError, Exception) as _e:
     _FACENET_AVAILABLE = False
     logger.warning(
-        "facenet-pytorch is not installed. Face recognition will return empty results. "
-        "Install with: pip install facenet-pytorch"
+        "facenet-pytorch/torch unavailable (%s). Face recognition will return empty results. "
+        "Install with: pip install facenet-pytorch",
+        _e,
     )
 
 try:

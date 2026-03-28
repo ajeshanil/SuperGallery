@@ -12,11 +12,12 @@ try:
     from torchvision.models import MobileNet_V3_Large_Weights
     from PIL import Image as _PILImage
     _TORCH_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError, Exception) as _e:
     _TORCH_AVAILABLE = False
     logger.warning(
-        "torch/torchvision is not installed. Scene classification will return empty results. "
-        "Install with: pip install torch torchvision pillow"
+        "torch/torchvision unavailable (%s). Scene classification will return empty results. "
+        "Install with: pip install torch torchvision pillow",
+        _e,
     )
 
 # Maps substrings of ImageNet class names to human-readable scene categories.

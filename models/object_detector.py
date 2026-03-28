@@ -10,11 +10,12 @@ logger = logging.getLogger(__name__)
 try:
     from ultralytics import YOLO as _YOLO
     _ULTRALYTICS_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError, Exception) as _e:
     _ULTRALYTICS_AVAILABLE = False
     logger.warning(
-        "ultralytics is not installed. Object detection will return empty results. "
-        "Install with: pip install ultralytics"
+        "ultralytics/torch unavailable (%s). Object detection will return empty results. "
+        "Install with: pip install ultralytics",
+        _e,
     )
 
 
