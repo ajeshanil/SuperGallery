@@ -63,9 +63,17 @@
       <svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
       Map
     </button>
+    <button class="nav-btn" data-view="albums">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 16V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2zm-11-4 2.03 2.71L16 11l4 5H8l3-4zM2 6v14a2 2 0 0 0 2 2h14v-2H4V6H2z"/></svg>
+      Albums
+    </button>
 
     <div class="sidebar-sep"></div>
 
+    <button class="nav-btn" id="run-quality-tags-btn" title="Backfill quality tags on all photos">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+      Quality Tags
+    </button>
     <button class="nav-btn danger-btn" id="reset-analysis-btn" title="Re-run AI analysis from scratch">
       <svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
       Reset Analysis
@@ -138,6 +146,7 @@
     <div id="view-people" class="view" hidden>
       <div id="people-header">
         <h2>People</h2>
+        <button class="action-btn" id="cleanup-people-btn">Clean up</button>
       </div>
       <div id="people-tabs">
         <button class="people-tab active" data-tab="all">All People</button>
@@ -150,6 +159,18 @@
     <!-- ── Map view ── -->
     <div id="view-map" class="view" hidden>
       <iframe id="map-frame" src="about:blank" title="Photo map"></iframe>
+    </div>
+
+    <!-- ── Albums view ─────────────────────────────────────────────────── -->
+    <div id="view-albums" class="view" hidden>
+      <div id="albums-header">
+        <h2>Albums</h2>
+        <div class="albums-actions">
+          <button class="action-btn" id="generate-events-btn">Auto-group Events</button>
+          <button class="action-btn" id="create-album-btn">+ New Album</button>
+        </div>
+      </div>
+      <div id="albums-grid"></div>
     </div>
 
   </main>
@@ -265,6 +286,10 @@
     <svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
     <span>Map</span>
   </button>
+  <button class="bnav-btn" data-view="albums">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 16V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2zm-11-4 2.03 2.71L16 11l4 5H8l3-4zM2 6v14a2 2 0 0 0 2 2h14v-2H4V6H2z"/></svg>
+    <span>Albums</span>
+  </button>
 </nav>
 
 <!-- ─── Lightbox ──────────────────────────────────────────────────── -->
@@ -281,6 +306,38 @@
     <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
   </button>
 </div>
+
+  <!-- ─── New album dialog ────────────────────────────────────────────── -->
+  <div id="album-dialog" hidden>
+    <div class="dialog-overlay" id="album-overlay"></div>
+    <div class="dialog-box">
+      <h2>New Album</h2>
+      <input id="album-name-input" type="text" placeholder="Album name…" autocomplete="off">
+      <div class="dialog-actions">
+        <button id="album-cancel" class="btn-ghost">Cancel</button>
+        <button id="album-confirm" class="btn-accent">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Clean up people dialog ──────────────────────────────────────── -->
+  <div id="cleanup-dialog" hidden>
+    <div class="dialog-overlay" id="cleanup-overlay"></div>
+    <div class="dialog-box" style="min-width:380px;max-width:560px">
+      <h2>Clean up People</h2>
+      <p style="font-size:13px;color:var(--text3);margin:0 0 8px">
+        People appearing in fewer than
+        <input id="cleanup-threshold" type="number" min="1" max="99" value="2"
+               style="width:52px;display:inline-block;margin:0 4px;padding:2px 6px">
+        photos. Uncheck any to keep.
+      </p>
+      <div id="cleanup-list" style="max-height:320px;overflow-y:auto;margin:8px 0;"></div>
+      <div class="dialog-actions">
+        <button id="cleanup-cancel" class="btn-ghost">Cancel</button>
+        <button id="cleanup-confirm" class="btn-danger">Delete Selected</button>
+      </div>
+    </div>
+  </div>
 
 <script src="/static/app.js"></script>
 </body>

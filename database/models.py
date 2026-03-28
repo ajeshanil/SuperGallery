@@ -115,3 +115,13 @@ class Album(Base):
     filter_query = Column(Text, nullable=True)   # JSON-encoded filter criteria
     is_smart = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    cover_photo_id = Column(Integer, ForeignKey("photos.id"), nullable=True)
+
+
+class AlbumPhoto(Base):
+    __tablename__ = "album_photos"
+
+    id = Column(Integer, primary_key=True)
+    album_id = Column(Integer, ForeignKey("albums.id"), nullable=False)
+    photo_id = Column(Integer, ForeignKey("photos.id"), nullable=False)
+    sort_order = Column(Integer, nullable=True, default=0)

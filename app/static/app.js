@@ -13,6 +13,8 @@ const state = {
   search: '',
   favoritesOnly: false,
   personFilter: null,       // { id, name } when viewing a person's photos
+  albumFilter: null,        // { id, name } when viewing an album's photos
+  searchIds: null,          // Set of photo IDs from server-side search, or null
   tagFilters: {},           // { category: [label, …] } active chip filters
   page: 1,                  // 1-based, matches API
   totalPages: 1,
@@ -103,6 +105,23 @@ const D = {
   lightboxClose: $('lightbox-close'),
   lightboxPrev:  $('lightbox-prev'),
   lightboxNext:  $('lightbox-next'),
+  runQualityTagsBtn: $('run-quality-tags-btn'),
+  viewAlbums:        $('view-albums'),
+  albumsGrid:        $('albums-grid'),
+  generateEventsBtn: $('generate-events-btn'),
+  createAlbumBtn:    $('create-album-btn'),
+  albumDialog:       $('album-dialog'),
+  albumOverlay:      $('album-overlay'),
+  albumNameInput:    $('album-name-input'),
+  albumCancel:       $('album-cancel'),
+  albumConfirm:      $('album-confirm'),
+  cleanupPeopleBtn:  $('cleanup-people-btn'),
+  cleanupDialog:     $('cleanup-dialog'),
+  cleanupOverlay:    $('cleanup-overlay'),
+  cleanupThreshold:  $('cleanup-threshold'),
+  cleanupList:       $('cleanup-list'),
+  cleanupCancel:     $('cleanup-cancel'),
+  cleanupConfirm:    $('cleanup-confirm'),
 };
 
 // ── Scroll observer ───────────────────────────────────────
@@ -191,7 +210,7 @@ function switchView(v) {
     b.classList.toggle('active', b.dataset.view === v));
 
   // Views — use both hidden + active class (CSS uses .view.active)
-  const viewMap = { gallery: D.viewGallery, people: D.viewPeople, map: D.viewMap };
+  const viewMap = { gallery: D.viewGallery, people: D.viewPeople, map: D.viewMap, albums: D.viewAlbums };
   Object.entries(viewMap).forEach(([name, el]) => {
     const on = name === v;
     el.hidden = !on;
@@ -201,7 +220,7 @@ function switchView(v) {
   // Hide same/diff bar when leaving People view
   if (v !== 'people') D.sameDiffBar.hidden = true;
 
-  if (v === 'gallery' && !state.personFilter) {
+  if (v === 'gallery' && !state.personFilter && !state.albumFilter) {
     // Normal gallery — reset only if no photos loaded yet
     if (state.photos.length === 0) resetAndLoad();
   } else if (v === 'people') {
@@ -210,6 +229,9 @@ function switchView(v) {
   } else if (v === 'map') {
     closeDetail();
     loadMap();
+  } else if (v === 'albums') {
+    closeDetail();
+    loadAlbums();
   }
 }
 
@@ -283,11 +305,10 @@ async function loadMorePhotos() {
 
     state.totalPages = data.pages || 1;
 
-    // Client-side text search on filename
     let photos = data.photos || [];
-    if (state.search) {
-      const q = state.search.toLowerCase();
-      photos = photos.filter(p => (p.filename || '').toLowerCase().includes(q));
+    // Server-side search: filter by matching IDs
+    if (state.searchIds !== null) {
+      photos = photos.filter(p => state.searchIds.has(p.id));
     }
 
     appendPhotos(photos, state.page === 1);
@@ -827,6 +848,7 @@ function renderPersonChips(tags, person) {
 
 function backToPeople() {
   state.personFilter = null;
+  state.albumFilter  = null;
   state.tagFilters   = {};
   D.personHeader.hidden = true;
   state.photos = [];
@@ -894,14 +916,26 @@ function loadMap() {
 // ── Search ────────────────────────────────────────────────
 let searchTimer = null;
 
-function onSearchInput() {
+async function onSearchInput() {
   const q = D.searchInput.value.trim();
   state.search = q;
   D.searchClear.hidden = !q;
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
+  if (!q) {
+    state.searchIds = null;
     if (state.view === 'gallery') resetAndLoad();
-  }, 320);
+    return;
+  }
+  searchTimer = setTimeout(async () => {
+    if (state.view !== 'gallery') switchView('gallery');
+    try {
+      const data = await fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+      state.searchIds = new Set(data.photo_ids || []);
+    } catch (_) {
+      state.searchIds = null;
+    }
+    resetAndLoad();
+  }, 300);
 }
 
 // ── Live refresh during operations ────────────────────────
@@ -983,7 +1017,7 @@ function startSSE() {
         showProgress(d);      // briefly show completion label
         setTimeout(() => {
           hideProgress();
-          const done = ['import_done','analyze_done','faces_done','thumbs_done'];
+          const done = ['import_done','analyze_done','faces_done','thumbs_done','quality_tags_done'];
           if (done.includes(d.operation)) {
             if (state.view === 'gallery') resetAndLoad();  // final full refresh
             if (d.operation === 'faces_done') loadPeople();
@@ -1005,15 +1039,17 @@ function startSSE() {
 }
 
 const OP_LABELS = {
-  import:       'Importing photos',
-  analyze:      'AI Analysis',
-  faces:        'Face Processing',
-  thumbs:       'Generating thumbnails',
-  import_done:  'Import complete',
-  analyze_done: 'Analysis complete',
-  faces_done:   'Face processing complete',
-  thumbs_done:  'Thumbnails ready',
-  error:        'Error',
+  import:            'Importing photos',
+  analyze:           'AI Analysis',
+  faces:             'Face Processing',
+  thumbs:            'Generating thumbnails',
+  import_done:       'Import complete',
+  analyze_done:      'Analysis complete',
+  faces_done:        'Face processing complete',
+  thumbs_done:       'Thumbnails ready',
+  quality_tags:      'Quality tag backfill',
+  quality_tags_done: 'Quality tags complete',
+  error:             'Error',
 };
 
 function showProgress(d) {
@@ -1191,6 +1227,200 @@ function toast(msg, type = 'info') {
   _toastTimer = setTimeout(() => _toastEl.classList.remove('show'), 3200);
 }
 
+// ── Albums ──────────────────────────────────────────────────────────────────
+
+async function loadAlbums() {
+  D.albumsGrid.innerHTML = '<div class="loading-msg">Loading albums\u2026</div>';
+  try {
+    const albums = await fetch('/api/albums').then(r => r.json());
+    renderAlbumsGrid(albums);
+  } catch (_) {
+    D.albumsGrid.innerHTML = '<div class="empty-msg">Could not load albums.</div>';
+  }
+}
+
+function renderAlbumsGrid(albums) {
+  if (!albums.length) {
+    D.albumsGrid.innerHTML =
+      '<div class="empty-msg">No albums yet.<br>Click "Auto-group Events" to create event albums automatically.</div>';
+    return;
+  }
+  D.albumsGrid.innerHTML = albums.map(a =>
+    `<div class="album-card" data-id="${a.id}" data-name="${escAttr(a.name)}">
+      <div class="album-cover">
+        ${a.cover_photo_id
+          ? `<img src="/api/photos/${a.cover_photo_id}/thumb" alt="" loading="lazy">`
+          : '<div class="album-cover-placeholder"></div>'}
+      </div>
+      <div class="album-name">${escHtml(a.name)}</div>
+      <div class="album-count">${a.photo_count} photo${a.photo_count === 1 ? '' : 's'}</div>
+      <button class="album-delete-btn" data-id="${a.id}" aria-label="Delete album">&times;</button>
+    </div>`
+  ).join('');
+
+  D.albumsGrid.querySelectorAll('.album-card').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.target.classList.contains('album-delete-btn')) return;
+      openAlbumGallery({ id: +el.dataset.id, name: el.dataset.name });
+    });
+  });
+  D.albumsGrid.querySelectorAll('.album-delete-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      deleteAlbum(+btn.dataset.id);
+    });
+  });
+}
+
+async function openAlbumGallery(album) {
+  state.albumFilter = album;
+  state.personFilter = null;
+  state.tagFilters = {};
+  state.searchIds = null;
+
+  if (D.personHeader) {
+    D.personHeader.hidden = false;
+    if (D.phName) D.phName.textContent = escHtml(album.name);
+    if (D.phCount) D.phCount.textContent = '';
+    if (D.phChips) D.phChips.innerHTML = '';
+  }
+
+  switchView('gallery');
+
+  state.photos = [];
+  showSkeletons();
+  D.galleryCount.textContent = '';
+
+  try {
+    const photos = await fetch(`/api/albums/${album.id}/photos`).then(r => r.json());
+    appendPhotos(photos, true);
+    state.photos = photos;
+    D.galleryCount.textContent = `${photos.length} photo${photos.length === 1 ? '' : 's'}`;
+  } catch (_) {
+    D.photoGrid.innerHTML = '<div class="empty-msg">Could not load album photos.</div>';
+  }
+}
+
+async function deleteAlbum(id) {
+  if (!confirm('Delete this album? Photos are not deleted.')) return;
+  try {
+    const r = await fetch(`/api/albums/${id}`, { method: 'DELETE' });
+    if (r.ok) { loadAlbums(); toast('Album deleted'); }
+    else toast('Delete failed', 'error');
+  } catch (_) { toast('Delete failed', 'error'); }
+}
+
+async function generateEventAlbums() {
+  D.generateEventsBtn.disabled = true;
+  D.generateEventsBtn.textContent = 'Generating\u2026';
+  try {
+    const data = await fetch('/api/albums/generate-events', { method: 'POST' }).then(r => r.json());
+    if (data.error) toast(data.error, 'error');
+    else {
+      toast(`Created ${data.albums_created} event album${data.albums_created === 1 ? '' : 's'}`);
+      loadAlbums();
+    }
+  } catch (_) { toast('Request failed.', 'error'); }
+  finally {
+    D.generateEventsBtn.disabled = false;
+    D.generateEventsBtn.textContent = 'Auto-group Events';
+  }
+}
+
+function openAlbumCreateDialog() {
+  D.albumNameInput.value = '';
+  D.albumDialog.hidden = false;
+  setTimeout(() => D.albumNameInput.focus(), 50);
+}
+function closeAlbumDialog() { D.albumDialog.hidden = true; }
+async function confirmAlbumCreate() {
+  const name = D.albumNameInput.value.trim();
+  if (!name) return;
+  closeAlbumDialog();
+  try {
+    await fetch('/api/albums', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    toast(`Album "${name}" created`);
+    loadAlbums();
+  } catch (_) { toast('Create failed.', 'error'); }
+}
+
+function backToAlbums() {
+  state.albumFilter = null;
+  if (D.personHeader) D.personHeader.hidden = true;
+  switchView('albums');
+}
+
+// ── Cleanup people ───────────────────────────────────────────────────────────
+
+let _cleanupCandidates = [];
+
+async function openCleanupDialog() {
+  const threshold = parseInt(D.cleanupThreshold.value) || 2;
+  await _loadCleanupCandidates(threshold);
+  D.cleanupDialog.hidden = false;
+}
+
+async function _loadCleanupCandidates(threshold) {
+  D.cleanupList.innerHTML = '<div class="loading-msg">Loading\u2026</div>';
+  try {
+    const people = await fetch('/api/people').then(r => r.json());
+    _cleanupCandidates = people.filter(p => (p.photo_count || 0) < threshold);
+    if (!_cleanupCandidates.length) {
+      D.cleanupList.innerHTML =
+        `<div class="empty-msg">No people with fewer than ${threshold} photo${threshold === 1 ? '' : 's'}.</div>`;
+      return;
+    }
+    D.cleanupList.innerHTML = _cleanupCandidates.map(p =>
+      `<label class="cleanup-row">
+        <input type="checkbox" class="cleanup-chk" data-id="${p.id}" checked>
+        <span class="cleanup-avatar">
+          ${p.has_thumb
+            ? `<img src="/api/people/${p.id}/thumb" width="32" height="32" style="border-radius:50%;object-fit:cover">`
+            : `<span class="cleanup-initial">${avatarInitial(p.name)}</span>`}
+        </span>
+        <span class="cleanup-name">${escHtml(p.name)}</span>
+        <span class="cleanup-cnt">${p.photo_count} photo${p.photo_count === 1 ? '' : 's'}</span>
+      </label>`
+    ).join('');
+  } catch (_) {
+    D.cleanupList.innerHTML = '<div class="empty-msg">Could not load people.</div>';
+  }
+}
+
+function closeCleanupDialog() { D.cleanupDialog.hidden = true; }
+
+async function confirmCleanup() {
+  const checked = [...D.cleanupList.querySelectorAll('.cleanup-chk:checked')]
+    .map(cb => +cb.dataset.id);
+  if (!checked.length) { closeCleanupDialog(); return; }
+  if (!confirm(`Delete ${checked.length} person${checked.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  closeCleanupDialog();
+  try {
+    const data = await fetch('/api/people/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ person_ids: checked }),
+    }).then(r => r.json());
+    toast(`Deleted ${data.deleted} person${data.deleted === 1 ? '' : 's'}`);
+    loadPeople();
+    loadTagCounts();
+  } catch (_) { toast('Bulk delete failed.', 'error'); }
+}
+
+// ── Quality tags ─────────────────────────────────────────────────────────────
+
+async function runQualityTagsBackfill() {
+  try {
+    const data = await fetch('/api/admin/run-quality-tags', { method: 'POST' }).then(r => r.json());
+    if (data.error) toast(data.error, 'error');
+    else toast('Quality tag backfill started\u2026');
+  } catch (_) { toast('Request failed.', 'error'); }
+}
+
 // ── Helpers ───────────────────────────────────────────────
 function escHtml(s) {
   return String(s)
@@ -1222,6 +1452,8 @@ function init() {
     D.searchInput.value = '';
     D.searchClear.hidden = true;
     state.search = '';
+    state.searchIds = null;
+    state.albumFilter = null;
     if (state.view === 'gallery') resetAndLoad();
   });
 
@@ -1264,8 +1496,31 @@ function init() {
   D.addTagBtn.addEventListener('click', addTag);
   D.newTagInput.addEventListener('keydown', e => { if (e.key === 'Enter') addTag(); });
 
-  // Back to people
-  D.backToPeople.addEventListener('click', backToPeople);
+  // Back button — goes to albums if albumFilter set, else people
+  D.backToPeople.addEventListener('click', () => {
+    if (state.albumFilter) backToAlbums();
+    else backToPeople();
+  });
+
+  // Albums
+  D.generateEventsBtn.addEventListener('click', generateEventAlbums);
+  D.createAlbumBtn.addEventListener('click', openAlbumCreateDialog);
+  D.albumOverlay.addEventListener('click', closeAlbumDialog);
+  D.albumCancel.addEventListener('click', closeAlbumDialog);
+  D.albumConfirm.addEventListener('click', confirmAlbumCreate);
+  D.albumNameInput.addEventListener('keydown', e => { if (e.key === 'Enter') confirmAlbumCreate(); });
+
+  // Cleanup people
+  D.cleanupPeopleBtn.addEventListener('click', openCleanupDialog);
+  D.cleanupOverlay.addEventListener('click', closeCleanupDialog);
+  D.cleanupCancel.addEventListener('click', closeCleanupDialog);
+  D.cleanupConfirm.addEventListener('click', confirmCleanup);
+  D.cleanupThreshold.addEventListener('change', () => {
+    _loadCleanupCandidates(parseInt(D.cleanupThreshold.value) || 2);
+  });
+
+  // Quality tags
+  D.runQualityTagsBtn.addEventListener('click', runQualityTagsBackfill);
 
   // People tabs
   document.querySelectorAll('.people-tab').forEach(tab => {
@@ -1305,6 +1560,8 @@ function init() {
 
     if (e.key === 'Escape') {
       if (!D.lightbox.hidden)      { closeLightbox();       return; }
+      if (!D.albumDialog.hidden)   { closeAlbumDialog();    return; }
+      if (!D.cleanupDialog.hidden) { closeCleanupDialog();  return; }
       if (!D.importDialog.hidden)  { closeImportDialog();   return; }
       if (!D.renameDialog.hidden)  { closeRenameDialog();   return; }
       if (!D.detailPanel.hidden)   { closeDetail();          return; }

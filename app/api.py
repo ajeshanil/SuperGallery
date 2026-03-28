@@ -37,7 +37,7 @@ from sqlalchemy import func
 
 from database.db import get_session, init_db
 from database.models import (
-    Location, ObjectDetection, Photo, PhotoPerson, Person, Tag,
+    Album, AlbumPhoto, Location, ObjectDetection, Photo, PhotoPerson, Person, Tag,
 )
 from utils.search import search_photos
 
@@ -71,6 +71,21 @@ _op_lock = threading.Lock()
 def _set(**kw):
     with _op_lock:
         _op.update(kw)
+
+
+def _format_event_name(start_date, end_date) -> str:
+    """Format album name: '12 Mar 2024' or '12–15 Mar 2024'."""
+    _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun',
+               'Jul','Aug','Sep','Oct','Nov','Dec']
+    d1, d2 = start_date, end_date
+    if d1.date() == d2.date():
+        return f"{d1.day} {_MONTHS[d1.month-1]} {d1.year}"
+    elif d1.month == d2.month and d1.year == d2.year:
+        return f"{d1.day}\u2013{d2.day} {_MONTHS[d1.month-1]} {d1.year}"
+    elif d1.year == d2.year:
+        return f"{d1.day} {_MONTHS[d1.month-1]} \u2013 {d2.day} {_MONTHS[d2.month-1]} {d1.year}"
+    else:
+        return f"{d1.day} {_MONTHS[d1.month-1]} {d1.year} \u2013 {d2.day} {_MONTHS[d2.month-1]} {d2.year}"
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +327,41 @@ def tag_counts():
         for cat, lbl, cnt in rows:
             result.setdefault(cat, []).append({"label": lbl, "count": cnt})
         return result
+    finally:
+        session.close()
+
+
+@app.get("/api/search")
+def api_search_photos(q: str = ""):
+    """Full-text search across tag labels, filename, and person names."""
+    if not q or not q.strip():
+        return {"photo_ids": []}
+    session = get_session()
+    try:
+        pattern = f"%{q.strip()}%"
+        tag_match_ids = {
+            r[0] for r in session.query(Tag.photo_id)
+            .filter(Tag.label.ilike(pattern)).distinct()
+        }
+        filename_match_ids = {
+            r[0] for r in session.query(Photo.id)
+            .filter(Photo.filename.ilike(pattern))
+        }
+        person_match_ids = {
+            r[0] for r in session.query(PhotoPerson.photo_id)
+            .join(Person, Person.id == PhotoPerson.person_id)
+            .filter(Person.name.ilike(pattern)).distinct()
+        }
+        all_ids = tag_match_ids | filename_match_ids | person_match_ids
+        if not all_ids:
+            return {"photo_ids": []}
+        photos = (
+            session.query(Photo)
+            .filter(Photo.id.in_(all_ids))
+            .order_by(Photo.date_taken.desc().nullslast())
+            .all()
+        )
+        return {"photo_ids": [p.id for p in photos]}
     finally:
         session.close()
 
@@ -678,6 +728,187 @@ def merge_people(body: _Merge):
         session.close()
 
 
+class _BulkDeletePeople(BaseModel):
+    person_ids: list[int]
+
+
+@app.post("/api/people/bulk-delete")
+def bulk_delete_people(body: _BulkDeletePeople):
+    """Delete multiple persons at once."""
+    if not body.person_ids:
+        return {"ok": True, "deleted": 0}
+    session = get_session()
+    try:
+        deleted = 0
+        for person_id in body.person_ids:
+            person = session.get(Person, person_id)
+            if not person:
+                continue
+            if person.thumbnail_path:
+                try:
+                    Path(person.thumbnail_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            session.query(PhotoPerson).filter(PhotoPerson.person_id == person_id).delete()
+            session.query(Tag).filter(
+                Tag.category == "People", Tag.label == person.name
+            ).delete()
+            session.delete(person)
+            deleted += 1
+        session.commit()
+        return {"ok": True, "deleted": deleted}
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(500, str(exc))
+    finally:
+        session.close()
+
+
+# ── Albums ──────────────────────────────────────────────────────────────────
+
+class _AlbumCreate(BaseModel):
+    name: str
+
+
+@app.post("/api/albums/generate-events")
+def generate_event_albums():
+    """Auto-group photos into event albums by 6-hour time gaps."""
+    from datetime import timedelta
+    session = get_session()
+    try:
+        # Delete previously auto-generated event albums
+        old_ids = [r[0] for r in session.query(Album.id)
+                   .filter(Album.filter_query == "event")]
+        if old_ids:
+            session.query(AlbumPhoto).filter(
+                AlbumPhoto.album_id.in_(old_ids)
+            ).delete(synchronize_session=False)
+            session.query(Album).filter(Album.id.in_(old_ids)).delete(
+                synchronize_session=False)
+            session.commit()
+
+        photos = (
+            session.query(Photo)
+            .filter(Photo.date_taken.isnot(None))
+            .order_by(Photo.date_taken)
+            .all()
+        )
+        if not photos:
+            return {"ok": True, "albums_created": 0}
+
+        events = []
+        current_event = [photos[0]]
+        for photo in photos[1:]:
+            if photo.date_taken - current_event[-1].date_taken > timedelta(hours=6):
+                events.append(current_event)
+                current_event = [photo]
+            else:
+                current_event.append(photo)
+        events.append(current_event)
+
+        albums_created = 0
+        for event_photos in events:
+            if len(event_photos) < 2:
+                continue
+            start = event_photos[0].date_taken
+            end = event_photos[-1].date_taken
+            name = _format_event_name(start, end)
+            album = Album(
+                name=name,
+                filter_query="event",
+                is_smart=False,
+                cover_photo_id=event_photos[0].id,
+            )
+            session.add(album)
+            session.flush()
+            for order, photo in enumerate(event_photos):
+                session.add(AlbumPhoto(album_id=album.id,
+                                       photo_id=photo.id,
+                                       sort_order=order))
+            albums_created += 1
+        session.commit()
+        return {"ok": True, "albums_created": albums_created}
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(500, str(exc))
+    finally:
+        session.close()
+
+
+@app.get("/api/albums")
+def list_albums_api():
+    session = get_session()
+    try:
+        albums = session.query(Album).order_by(Album.created_at.desc()).all()
+        result = []
+        for a in albums:
+            count = session.query(AlbumPhoto).filter(
+                AlbumPhoto.album_id == a.id).count()
+            result.append({
+                "id": a.id,
+                "name": a.name,
+                "is_smart": bool(a.is_smart),
+                "photo_count": count,
+                "cover_photo_id": a.cover_photo_id,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            })
+        return result
+    finally:
+        session.close()
+
+
+@app.get("/api/albums/{album_id}/photos")
+def album_photos_api(album_id: int):
+    session = get_session()
+    try:
+        album = session.get(Album, album_id)
+        if not album:
+            raise HTTPException(404)
+        rows = (session.query(AlbumPhoto)
+                .filter(AlbumPhoto.album_id == album_id)
+                .order_by(AlbumPhoto.sort_order)
+                .all())
+        photo_ids = [r.photo_id for r in rows]
+        photos_by_id = {
+            p.id: p for p in
+            session.query(Photo).filter(Photo.id.in_(photo_ids)).all()
+        }
+        return [_photo_dict(photos_by_id[pid]) for pid in photo_ids if pid in photos_by_id]
+    finally:
+        session.close()
+
+
+@app.post("/api/albums")
+def create_album_api(body: _AlbumCreate):
+    session = get_session()
+    try:
+        album = Album(name=body.name.strip(), filter_query=None, is_smart=False)
+        session.add(album)
+        session.commit()
+        return {
+            "id": album.id, "name": album.name, "photo_count": 0,
+            "cover_photo_id": None,
+            "created_at": album.created_at.isoformat() if album.created_at else None,
+        }
+    finally:
+        session.close()
+
+
+@app.delete("/api/albums/{album_id}")
+def delete_album_api(album_id: int):
+    session = get_session()
+    try:
+        album = session.get(Album, album_id)
+        if not album:
+            raise HTTPException(404)
+        session.query(AlbumPhoto).filter(AlbumPhoto.album_id == album_id).delete()
+        session.delete(album)
+        session.commit()
+        return {"ok": True}
+    finally:
+        session.close()
+
+
 # ---------------------------------------------------------------------------
 # Thumbnail pre-generation
 # ---------------------------------------------------------------------------
@@ -824,6 +1055,53 @@ def reset_all():
         raise HTTPException(500, str(exc))
     finally:
         session.close()
+
+
+@app.post("/api/admin/run-quality-tags")
+def run_quality_tags(background_tasks: BackgroundTasks):
+    """Backfill quality PhotoType tags on all photos that don't have them yet."""
+    with _op_lock:
+        if _op["running"]:
+            return {"error": "Operation already running"}
+    background_tasks.add_task(_bg_run_quality_tags)
+    return {"ok": True}
+
+
+def _bg_run_quality_tags():
+    QUALITY_LABELS = {"Blurry", "Dark/Accidental", "Screenshot"}
+    _set(running=True, operation="quality_tags", op_label="Quality tag backfill",
+         done=0, total=0, message="Counting photos\u2026")
+    session = get_session()
+    try:
+        already_done_ids = {
+            r[0] for r in session.query(Tag.photo_id)
+            .filter(Tag.category == "PhotoType",
+                    Tag.label.in_(list(QUALITY_LABELS)))
+            .distinct()
+        }
+        photos = session.query(Photo).filter(~Photo.id.in_(already_done_ids)).all()
+        total = len(photos)
+        _set(total=total, message=f"Processing {total} photos\u2026")
+
+        for i, photo in enumerate(photos):
+            _set(current_file=Path(photo.file_path).name)
+            try:
+                tags = _detect_photo_quality_type(photo)
+                for qt in tags:
+                    session.add(Tag(photo_id=photo.id, label=qt,
+                                   category="PhotoType", is_manual=False))
+                if tags:
+                    session.commit()
+                else:
+                    session.rollback()
+            except Exception as exc:
+                logger.warning("Quality tag error photo %d: %s", photo.id, exc)
+                session.rollback()
+            _set(done=i + 1, message=f"Processed {i+1}/{total}")
+    finally:
+        session.close()
+    _set(running=False, operation="quality_tags_done",
+         message="Quality tag backfill complete", current_file="")
 
 
 # ---------------------------------------------------------------------------
