@@ -1,0 +1,21 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
+PyQt6>=6.5.0
+SQLAlchemy>=2.0.0
+Pillow>=10.0.0
+exifread>=3.0.0
+
+# ── Phase 2 — AI tagging ──────────────────────────────────────────────────────
+ultralytics>=8.0.0          # YOLOv8 object detection
+torch>=2.0.0
+torchvision>=0.15.0         # MobileNetV3 scene classification
+
+# ── Phase 3 — Face recognition ────────────────────────────────────────────────
+facenet-pytorch>=2.5.3      # MTCNN face detection + InceptionResnetV1 embeddings
+scikit-learn>=1.3.0         # AgglomerativeClustering for face grouping
+numpy>=1.24.0
+
+# ── Phase 4 — Map ─────────────────────────────────────────────────────────────
+folium>=0.14.0              # Interactive HTML map generation
+PyQt6-WebEngine>=6.5.0      # Embedded browser for map display
+
+# ── Phase 5 — No new deps ─────────────────────────────────────────────────────
