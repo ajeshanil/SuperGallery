@@ -34,8 +34,9 @@ from PyQt6.QtWidgets import (
 from database.db import get_session
 from database.models import Photo, Person
 from utils.importer import ImportWorker
-from utils.tagger import TagWorker
-from utils.face_processor import FaceWorker
+# TagWorker and FaceWorker import AI libs (torchvision ~3s, ultralytics ~0.3s).
+# Import them lazily inside _start_tagging / _start_face_processing so they
+# don't block startup.
 from utils.search import search_photos
 from utils.album_manager import get_album_photos
 from .photo_tile import PhotoTile, TILE_SIZE
@@ -75,9 +76,9 @@ class GalleryWindow(QMainWindow):
         self._import_thread: QThread | None = None
         self._import_worker: ImportWorker | None = None
         self._tag_thread: QThread | None = None
-        self._tag_worker: TagWorker | None = None
+        self._tag_worker = None
         self._face_thread: QThread | None = None
-        self._face_worker: FaceWorker | None = None
+        self._face_worker = None
 
         self._sort_mode = "month_desc"
         self._active_filters: dict = {}
@@ -90,9 +91,14 @@ class GalleryWindow(QMainWindow):
         self._resize_timer.setInterval(250)
         self._resize_timer.timeout.connect(self._do_deferred_render)
 
+        self._pending_groups: list = []
+        self._grid_pos: int = 0
+        self._total_photos: int = 0
+
         self._setup_styles()
         self._setup_ui()
-        self._load_photos()
+        # Defer initial load so the window appears before any heavy work
+        QTimer.singleShot(0, self._load_photos)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Style
@@ -346,6 +352,10 @@ class GalleryWindow(QMainWindow):
             session.close()
 
     def _render_grid(self, photos: list[Photo]):
+        # Cancel any in-progress incremental render
+        self._pending_groups = []
+
+        # Remove all existing grid widgets
         while self.grid_layout.count() > 1:
             item = self.grid_layout.takeAt(0)
             if item.widget():
@@ -356,35 +366,53 @@ class GalleryWindow(QMainWindow):
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder.setStyleSheet("color:#444; font-size:15px; padding:60px;")
             self.grid_layout.insertWidget(0, placeholder)
+            self.status.showMessage("No photos found")
             return
 
         groups = self._group_photos(photos)
-        pos = 0
-        for group_label, group_photos in groups:
-            header = QLabel(group_label.upper())
-            header.setObjectName("groupHeader")
-            self.grid_layout.insertWidget(pos, header)
-            pos += 1
+        self._pending_groups = list(groups)
+        self._grid_pos = 0
+        self._total_photos = len(photos)
+        self.status.showMessage(f"Loading {len(photos)} photo(s)…")
+        # Render first group immediately (gives instant visual feedback),
+        # then schedule remaining groups to keep the UI responsive
+        self._render_next_group()
 
-            sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet("background:#252525; max-height:1px; margin-bottom:6px;")
-            self.grid_layout.insertWidget(pos, sep)
-            pos += 1
+    def _render_next_group(self):
+        if not self._pending_groups:
+            self.status.showMessage(f"{self._total_photos} photo(s)")
+            return
 
-            grid_widget = QWidget()
-            grid = QGridLayout(grid_widget)
-            grid.setContentsMargins(0, 4, 0, 16)
-            grid.setSpacing(6)
-            cols = max(1, (self.grid_container.width() - 32) // (TILE_SIZE + 6))
-            for idx, photo in enumerate(group_photos):
-                date_str = photo.date_taken.strftime("%d %b %Y") if photo.date_taken else ""
-                tile = PhotoTile(photo.id, photo.file_path, date_str)
-                tile.clicked.connect(self._on_photo_clicked)
-                grid.addWidget(tile, idx // cols, idx % cols)
+        group_label, group_photos = self._pending_groups.pop(0)
+        cols = max(1, (self.grid_container.width() - 32) // (TILE_SIZE + 6))
 
-            self.grid_layout.insertWidget(pos, grid_widget)
-            pos += 1
+        header = QLabel(group_label.upper())
+        header.setObjectName("groupHeader")
+        self.grid_layout.insertWidget(self._grid_pos, header)
+        self._grid_pos += 1
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background:#252525; max-height:1px; margin-bottom:6px;")
+        self.grid_layout.insertWidget(self._grid_pos, sep)
+        self._grid_pos += 1
+
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setContentsMargins(0, 4, 0, 16)
+        grid.setSpacing(6)
+        for idx, photo in enumerate(group_photos):
+            date_str = photo.date_taken.strftime("%d %b %Y") if photo.date_taken else ""
+            tile = PhotoTile(photo.id, photo.file_path, date_str)
+            tile.clicked.connect(self._on_photo_clicked)
+            grid.addWidget(tile, idx // cols, idx % cols)
+
+        self.grid_layout.insertWidget(self._grid_pos, grid_widget)
+        self._grid_pos += 1
+
+        # Yield to event loop before rendering the next group
+        if self._pending_groups:
+            QTimer.singleShot(0, self._render_next_group)
 
     def _group_photos(self, photos: list[Photo]) -> list[tuple[str, list[Photo]]]:
         reverse = "desc" in self._sort_mode
@@ -543,6 +571,7 @@ class GalleryWindow(QMainWindow):
         self.progress_bar.show()
         self.status.showMessage("Running AI tagging…")
 
+        from utils.tagger import TagWorker  # lazy: imports torchvision/ultralytics
         self._tag_thread = QThread()
         self._tag_worker = TagWorker()
         self._tag_worker.moveToThread(self._tag_thread)
@@ -581,6 +610,7 @@ class GalleryWindow(QMainWindow):
         self.progress_bar.show()
         self.status.showMessage("Processing faces…")
 
+        from utils.face_processor import FaceWorker  # lazy: imports facenet/torch
         self._face_thread = QThread()
         self._face_worker = FaceWorker()
         self._face_worker.moveToThread(self._face_thread)
@@ -623,6 +653,11 @@ class GalleryWindow(QMainWindow):
         self._resize_timer.start()
 
     def _do_deferred_render(self):
+        # Only re-render if cols would actually change
+        new_cols = max(1, (self.grid_container.width() - 32) // (TILE_SIZE + 6))
+        if getattr(self, "_last_cols", None) == new_cols:
+            return
+        self._last_cols = new_cols
         session = get_session()
         try:
             if self._active_filters and any(self._active_filters.values()):

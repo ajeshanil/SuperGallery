@@ -1,6 +1,8 @@
 """Single photo thumbnail tile for the gallery grid."""
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap, QColor
+import io
+
+from PyQt6.QtCore import Qt, QRunnable, QThreadPool, QObject, pyqtSignal
+from PyQt6.QtGui import QPixmap, QColor, QImage
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
 
@@ -8,13 +10,35 @@ TILE_SIZE = 160
 THUMB_SIZE = 150
 
 
-def _load_thumbnail(file_path: str, size: int) -> QPixmap:
-    pix = QPixmap(file_path)
-    if pix.isNull():
-        pix = QPixmap(size, size)
-        pix.fill(QColor("#2a2a2a"))
-    return pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
-                      Qt.TransformationMode.SmoothTransformation)
+class _ThumbSignals(QObject):
+    loaded = pyqtSignal(QImage)
+
+
+class _ThumbLoader(QRunnable):
+    """Loads and resizes an image on a thread-pool thread using PIL."""
+
+    def __init__(self, file_path: str, size: int):
+        super().__init__()
+        self.file_path = file_path
+        self.size = size
+        self.signals = _ThumbSignals()
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            from PIL import Image
+            img = Image.open(self.file_path)
+            # .draft() tells PIL to decode at a smaller size (big JPEG speed-up)
+            img.draft("RGB", (self.size, self.size))
+            img.thumbnail((self.size, self.size), Image.BILINEAR)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=80)
+            qimg = QImage.fromData(buf.getvalue())
+        except Exception:
+            qimg = QImage()
+        self.signals.loaded.emit(qimg)
 
 
 class PhotoTile(QWidget):
@@ -38,7 +62,6 @@ class PhotoTile(QWidget):
         self._thumb_label.setFixedSize(THUMB_SIZE, THUMB_SIZE)
         self._thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._thumb_label.setStyleSheet("background:#1e1e1e; border-radius:4px;")
-        # Placeholder — real image loads lazily on showEvent
         placeholder = QPixmap(THUMB_SIZE, THUMB_SIZE)
         placeholder.fill(QColor("#2a2a2a"))
         self._thumb_label.setPixmap(placeholder)
@@ -55,13 +78,24 @@ class PhotoTile(QWidget):
         super().showEvent(event)
         if not self._thumb_loaded:
             self._thumb_loaded = True
-            QTimer.singleShot(0, self._load_thumb)
+            loader = _ThumbLoader(self._file_path, THUMB_SIZE)
+            loader.signals.loaded.connect(self._on_thumb_loaded)
+            QThreadPool.globalInstance().start(loader)
 
-    def _load_thumb(self):
-        pix = _load_thumbnail(self._file_path, THUMB_SIZE)
-        self._thumb_label.setPixmap(pix)
+    def _on_thumb_loaded(self, qimg: QImage):
+        pix = QPixmap.fromImage(qimg) if not qimg.isNull() else _blank_pixmap()
+        try:
+            self._thumb_label.setPixmap(pix)
+        except RuntimeError:
+            pass  # widget was already deleted (grid re-rendered)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.photo_id)
         super().mousePressEvent(event)
+
+
+def _blank_pixmap() -> QPixmap:
+    pix = QPixmap(THUMB_SIZE, THUMB_SIZE)
+    pix.fill(QColor("#2a2a2a"))
+    return pix
