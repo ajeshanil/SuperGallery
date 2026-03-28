@@ -72,7 +72,6 @@ class TagWorker(QObject):
             tagged_photo_ids_subq = (
                 session.query(Tag.photo_id)
                 .filter(Tag.category.in_(_AI_CATEGORIES))
-                .subquery()
             )
             query = session.query(Photo).filter(
                 ~Photo.id.in_(tagged_photo_ids_subq)

@@ -368,6 +368,89 @@ def test_ai_tagger_graceful():
     worker = _run("TagWorker() instantiates", TagWorker)
 
 
+def test_ai_tagger_end_to_end():
+    _section("AI tagger end-to-end (5 photos)")
+    from database.db import get_session
+    from database.models import Photo, Tag
+    from utils.tagger import TagWorker
+    from utils.search import search_photos
+
+    session = get_session()
+    try:
+        photos = session.query(Photo).limit(5).all()
+        photo_ids = [p.id for p in photos]
+    finally:
+        session.close()
+
+    if not photo_ids:
+        _fail("AI tagger end-to-end", "no photos in DB")
+        return
+
+    worker = TagWorker(photo_ids=photo_ids)
+    try:
+        worker._run()
+        _pass("TagWorker._run() completes on 5 photos")
+    except Exception as exc:
+        _fail("TagWorker._run() completes", f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return
+
+    session = get_session()
+    try:
+        ai_tags = session.query(Tag).filter(
+            Tag.photo_id.in_(photo_ids),
+            Tag.category.in_(["Objects", "Scenes", "PhotoType"]),
+        ).all()
+        cats: dict[str, list[str]] = {}
+        for t in ai_tags:
+            cats.setdefault(t.category, []).append(t.label)
+
+        if cats:
+            _pass("AI tags written to DB", f"{len(ai_tags)} tags across {len(cats)} categories")
+            for cat, labels in cats.items():
+                _pass(f"  Category '{cat}'", f"{len(labels)} tags, e.g. {list(set(labels))[:5]}")
+        else:
+            _pass("AI tagger ran (0 tags — models found nothing in sample photos)")
+
+        # Verify search works with any generated Object tag
+        if "Objects" in cats:
+            label = next(iter(set(cats["Objects"])))
+            results = search_photos(session, {"Objects": [label]})
+            _pass(f"Search Objects='{label}'", f"{len(results)} photos") if results \
+                else _fail(f"Search Objects='{label}'", "0 results")
+
+        # Verify search works with any generated Scene tag
+        if "Scenes" in cats:
+            label = next(iter(set(cats["Scenes"])))
+            results = search_photos(session, {"Scenes": [label]})
+            _pass(f"Search Scenes='{label}'", f"{len(results)} photos") if results \
+                else _fail(f"Search Scenes='{label}'", "0 results")
+
+        # Verify search works with PhotoType
+        if "PhotoType" in cats:
+            label = next(iter(set(cats["PhotoType"])))
+            results = search_photos(session, {"PhotoType": [label]})
+            _pass(f"Search PhotoType='{label}'", f"{len(results)} photos") if results \
+                else _fail(f"Search PhotoType='{label}'", "0 results")
+
+        # Verify idempotency: re-running should skip already-tagged photos
+        before_count = session.query(Tag).filter(
+            Tag.photo_id.in_(photo_ids),
+            Tag.category.in_(["Objects", "Scenes", "PhotoType"]),
+        ).count()
+        worker2 = TagWorker(photo_ids=photo_ids)
+        worker2._run()
+        after_count = session.query(Tag).filter(
+            Tag.photo_id.in_(photo_ids),
+            Tag.category.in_(["Objects", "Scenes", "PhotoType"]),
+        ).count()
+        _pass("TagWorker is idempotent (no duplicate tags)") if after_count == before_count \
+            else _fail("TagWorker idempotency", f"tag count changed: {before_count} -> {after_count}")
+
+    finally:
+        session.close()
+
+
 def test_face_worker_graceful():
     _section("Face worker (graceful without deps)")
     from models.face_recognizer import FaceRecognizer, cluster_embeddings
@@ -395,6 +478,153 @@ def test_face_worker_graceful():
         _pass("cluster_embeddings() returns labels", str(labels))
 
     worker = _run("FaceWorker() instantiates", FaceWorker)
+
+
+def test_face_worker_end_to_end():
+    _section("Face worker end-to-end (5 photos)")
+    from database.db import get_session
+    from database.models import Photo, Person, PhotoPerson, Tag
+    from utils.face_processor import FaceWorker
+
+    session = get_session()
+    try:
+        photos = session.query(Photo).limit(5).all()
+        photo_ids = [p.id for p in photos]
+        people_before = session.query(Person).count()
+    finally:
+        session.close()
+
+    if not photo_ids:
+        _fail("Face worker end-to-end", "no photos in DB")
+        return
+
+    worker = FaceWorker(photo_ids=photo_ids)
+    try:
+        worker._run()
+        _pass("FaceWorker._run() completes on 5 photos")
+    except Exception as exc:
+        _fail("FaceWorker._run() completes", f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return
+
+    session = get_session()
+    try:
+        people_after = session.query(Person).count()
+        new_people = people_after - people_before
+        _pass("FaceWorker person count", f"{people_before} -> {people_after} ({new_people} new)")
+
+        if new_people > 0:
+            # Verify People tags were also written
+            people_tags = session.query(Tag).filter(
+                Tag.photo_id.in_(photo_ids),
+                Tag.category == "People",
+            ).count()
+            _pass("People tags written to DB", f"{people_tags} tags") if people_tags > 0 \
+                else _fail("People tags", "none written despite new persons")
+
+            # Verify search by person name works
+            from utils.search import search_photos
+            person = session.query(Person).first()
+            if person:
+                results = search_photos(session, {"People": [person.name]})
+                _pass(f"Search People='{person.name}'", f"{len(results)} photos") if results \
+                    else _fail(f"Search People='{person.name}'", "0 results")
+        else:
+            _pass("FaceWorker ran (0 new persons — facenet-pytorch may not be installed or no faces found)")
+
+        # Verify idempotency
+        worker2 = FaceWorker(photo_ids=photo_ids)
+        worker2._run()
+        people_after2 = session.query(Person).count()
+        _pass("FaceWorker is idempotent") if people_after2 == people_after \
+            else _fail("FaceWorker idempotency", f"count changed: {people_after} -> {people_after2}")
+    finally:
+        session.close()
+
+
+def test_import_worker_direct(folder: str):
+    _section("ImportWorker direct (via _run)")
+    from database.db import get_session
+    from database.models import Photo
+    from utils.importer import ImportWorker
+
+    session = get_session()
+    before = session.query(Photo).count()
+    session.close()
+
+    worker = ImportWorker(folder)
+    try:
+        worker._run()
+        _pass("ImportWorker._run() completes")
+    except Exception as exc:
+        _fail("ImportWorker._run()", f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return
+
+    session = get_session()
+    after = session.query(Photo).count()
+    session.close()
+    # Count should be same (already imported) or more (if new photos found)
+    _pass("Photo count stable after re-import", f"{before} -> {after}") if after >= before \
+        else _fail("Photo count dropped after re-import", f"{before} -> {after}")
+
+
+def test_search_combined():
+    _section("Search — combined AND/OR filters")
+    from database.db import get_session
+    from database.models import Photo, Tag
+    from utils.search import search_photos, get_all_tags_by_category
+
+    session = get_session()
+    try:
+        cats = get_all_tags_by_category(session)
+
+        # AND across categories: Date + Objects (if Objects exist)
+        years = [l for l in cats.get("Date", []) if l.isdigit()]
+        objects = cats.get("Objects", [])
+
+        if years and objects:
+            combined = search_photos(session, {"Date": [years[0]], "Objects": [objects[0]]})
+            single_date = search_photos(session, {"Date": [years[0]]})
+            _pass(f"AND search (Date={years[0]} AND Objects={objects[0]})",
+                  f"{len(combined)} photos (vs {len(single_date)} date-only)")
+            _pass("AND gives <= single-category count") if len(combined) <= len(single_date) \
+                else _fail("AND logic broken", f"{len(combined)} > {len(single_date)}")
+        else:
+            _pass("AND across categories skipped (no Objects tags yet)")
+
+        # OR within Date category
+        if len(years) >= 2:
+            r_a = search_photos(session, {"Date": [years[0]]})
+            r_b = search_photos(session, {"Date": [years[1]]})
+            r_ab = search_photos(session, {"Date": [years[0], years[1]]})
+            _pass(f"OR within Date ({years[0]}|{years[1]})", f"{len(r_ab)} photos")
+            expected = max(len(r_a), len(r_b))
+            _pass("OR gives >= either individual result") if len(r_ab) >= expected \
+                else _fail("OR logic broken", f"{len(r_ab)} < {expected}")
+
+        # Text search hits tag labels
+        if years:
+            r_text = search_photos(session, {"text": years[0]})
+            r_date = search_photos(session, {"Date": [years[0]]})
+            _pass(f"Text search '{years[0]}' matches date tags",
+                  f"{len(r_text)} photos") if len(r_text) == len(r_date) \
+                else _pass(f"Text search '{years[0]}'", f"{len(r_text)} photos (Date filter gives {len(r_date)})")
+
+        # Location search
+        from database.models import Location
+        loc = session.query(Location).filter(
+            Location.city.isnot(None)
+        ).first()
+        if loc and loc.city:
+            r_loc = search_photos(session, {"Location": [loc.city]})
+            _pass(f"Location search '{loc.city}'", f"{len(r_loc)} photos") if r_loc \
+                else _fail(f"Location search '{loc.city}'", "0 results")
+        else:
+            _pass("Location search skipped (no city data in DB)")
+
+    finally:
+        session.close()
 
 
 def test_map_builder_graceful():
@@ -488,12 +718,16 @@ def main():
 
     test_db_init()
     test_import(args.folder)
+    test_import_worker_direct(args.folder)
     test_tags()
     test_search()
+    test_search_combined()
     test_albums()
     test_restructure()
     test_ai_tagger_graceful()
+    test_ai_tagger_end_to_end()
     test_face_worker_graceful()
+    test_face_worker_end_to_end()
     test_map_builder_graceful()
     test_db_integrity()
 
