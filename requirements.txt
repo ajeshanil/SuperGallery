@@ -1,5 +1,8 @@
+# ── Web server (Phase 6 — web UI) ─────────────────────────────────────────────
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
 # ── Core ──────────────────────────────────────────────────────────────────────
-PyQt6>=6.5.0
 SQLAlchemy>=2.0.0
 Pillow>=10.0.0
 exifread>=3.0.0
@@ -16,6 +19,7 @@ numpy>=1.24.0
 
 # ── Phase 4 — Map ─────────────────────────────────────────────────────────────
 folium>=0.14.0              # Interactive HTML map generation
-PyQt6-WebEngine>=6.5.0      # Embedded browser for map display
 
-# ── Phase 5 — No new deps ─────────────────────────────────────────────────────
+# ── Legacy Qt UI (superseded by web UI) ───────────────────────────────────────
+# PyQt6>=6.5.0
+# PyQt6-WebEngine>=6.5.0

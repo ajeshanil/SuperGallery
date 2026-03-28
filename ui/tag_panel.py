@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 
 from database.db import get_session
 from database.models import Tag, Photo
+from .photo_detail_dialog import PhotoDetailDialog
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ CATEGORY_COLORS: dict[str, tuple[str, str]] = {
     "PhotoType": ("#FAEEDA", "#633806"),
     "Location":  ("#FAECE7", "#712B13"),
     "Date":      ("#F1EFE8", "#444441"),
+    "Camera":    ("#E8F5E9", "#1B5E20"),
 }
 
 CATEGORIES = list(CATEGORY_COLORS.keys())
@@ -160,6 +162,7 @@ class TagPanel(QWidget):
         self.setStyleSheet(_DARK_STYLESHEET)
         self._photo_id: int | None = None
         self._setup_ui()
+        self.thumb_label.mousePressEvent = self._thumb_clicked
 
     # ------------------------------------------------------------------
     # UI setup
@@ -175,10 +178,12 @@ class TagPanel(QWidget):
         header.setObjectName("panelHeader")
         root.addWidget(header)
 
-        # Thumbnail preview
+        # Thumbnail preview — clicking opens the photo detail dialog
         self.thumb_label = QLabel()
-        self.thumb_label.setFixedSize(100, 100)
+        self.thumb_label.setFixedSize(160, 120)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.thumb_label.setToolTip("Click to view photo with object overlays")
         self.thumb_label.setStyleSheet(
             "background:#0d0d0d; border-radius:6px; margin: 0 auto;"
         )
@@ -237,6 +242,11 @@ class TagPanel(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
+    def _thumb_clicked(self, event) -> None:
+        if self._photo_id is not None:
+            dlg = PhotoDetailDialog(self._photo_id, parent=self)
+            dlg.exec()
+
     def load_photo(self, photo_id: int) -> None:
         """Query tags from DB, clear and rebuild the tag list."""
         self._photo_id = photo_id
@@ -246,10 +256,10 @@ class TagPanel(QWidget):
         try:
             photo = session.get(Photo, photo_id)
             if photo and Path(photo.file_path).exists():
-                pix = _load_thumbnail(photo.file_path, 100)
+                pix = _load_thumbnail(photo.file_path, 160)
                 self.thumb_label.setPixmap(pix)
             else:
-                pix = QPixmap(100, 100)
+                pix = QPixmap(160, 120)
                 pix.fill(QColor("#2a2a2a"))
                 self.thumb_label.setPixmap(pix)
 

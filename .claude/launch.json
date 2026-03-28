@@ -2,11 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "SuperGallery App",
+      "name": "SuperGallery Web",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["app/main.py"],
-      "port": 0,
-      "autoPort": true
+      "runtimeArgs": ["app/server.py"],
+      "port": 8432
     }
   ]
 }

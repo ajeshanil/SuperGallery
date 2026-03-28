@@ -70,6 +70,32 @@ def _parse_camera(exif: dict) -> Optional[str]:
     return model or make or None
 
 
+def _orientation_label(width: int, height: int) -> str:
+    """Return 'Portrait', 'Landscape', 'Square', or 'Panorama'."""
+    if width == 0 or height == 0:
+        return ""
+    ratio = width / height
+    if ratio > 2.0:
+        return "Panorama"
+    if ratio > 1.05:
+        return "Landscape"
+    if ratio < 0.95:
+        return "Portrait"
+    return "Square"
+
+
+def _resolution_label(width: int, height: int) -> str:
+    """Return a rough resolution class tag."""
+    mp = (width * height) / 1_000_000
+    if mp >= 20:
+        return "High-res (20MP+)"
+    if mp >= 8:
+        return "Mid-res (8–20MP)"
+    if mp >= 2:
+        return "Standard-res"
+    return ""
+
+
 def extract_metadata(file_path: str) -> dict:
     """Return a dict with all extracted EXIF metadata for a single file."""
     path = Path(file_path)
@@ -157,7 +183,8 @@ class ImportWorker(QObject):
                 session.add(photo)
                 session.flush()  # get photo.id
 
-                # Auto-tag with date category
+                # ── Metadata tags ─────────────────────────────────────────
+                # Date tags
                 if photo.date_taken:
                     session.add(Tag(
                         photo_id=photo.id,
@@ -169,6 +196,49 @@ class ImportWorker(QObject):
                         photo_id=photo.id,
                         label=photo.date_taken.strftime("%B %Y"),
                         category="Date",
+                        is_manual=False,
+                    ))
+                    session.add(Tag(
+                        photo_id=photo.id,
+                        label=photo.date_taken.strftime("%B"),
+                        category="Date",
+                        is_manual=False,
+                    ))
+
+                # Camera model tag
+                if photo.camera_model:
+                    session.add(Tag(
+                        photo_id=photo.id,
+                        label=photo.camera_model,
+                        category="Camera",
+                        is_manual=False,
+                    ))
+
+                # Orientation + resolution tags (from dimensions)
+                if photo.width and photo.height:
+                    orient = _orientation_label(photo.width, photo.height)
+                    if orient:
+                        session.add(Tag(
+                            photo_id=photo.id,
+                            label=orient,
+                            category="PhotoType",
+                            is_manual=False,
+                        ))
+                    res_lbl = _resolution_label(photo.width, photo.height)
+                    if res_lbl:
+                        session.add(Tag(
+                            photo_id=photo.id,
+                            label=res_lbl,
+                            category="PhotoType",
+                            is_manual=False,
+                        ))
+
+                # GPS location tag
+                if photo.lat is not None and photo.lng is not None:
+                    session.add(Tag(
+                        photo_id=photo.id,
+                        label="Has GPS",
+                        category="Location",
                         is_manual=False,
                     ))
 

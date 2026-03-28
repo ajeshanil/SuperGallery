@@ -12,6 +12,39 @@ from models.face_recognizer import FaceRecognizer, cluster_embeddings
 logger = logging.getLogger(__name__)
 
 
+def _save_face_thumbnail(session, person: "Person", face_data: tuple) -> None:
+    """Crop the best face detection and save it as person.thumbnail_path."""
+    photo_id, bbox, _confidence = face_data
+    try:
+        from PIL import Image
+        from pathlib import Path
+        photo = session.get(Photo, photo_id)
+        if not photo:
+            return
+        img = Image.open(photo.file_path).convert("RGB")
+        img_w, img_h = img.size
+        x, y, w, h = bbox
+        x1 = int(x * img_w)
+        y1 = int(y * img_h)
+        x2 = int((x + w) * img_w)
+        y2 = int((y + h) * img_h)
+        # 20% padding so the face isn't cropped too tightly
+        pad_x = int((x2 - x1) * 0.2)
+        pad_y = int((y2 - y1) * 0.2)
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(img_w, x2 + pad_x)
+        y2 = min(img_h, y2 + pad_y)
+        crop = img.crop((x1, y1, x2, y2)).resize((120, 120), Image.LANCZOS)
+        thumb_dir = Path.home() / ".supergallery" / "face_thumbs"
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        thumb_path = thumb_dir / f"{person.id}.jpg"
+        crop.save(str(thumb_path), format="JPEG", quality=85)
+        person.thumbnail_path = str(thumb_path)
+    except Exception as exc:
+        logger.warning("Could not save face thumbnail for person %d: %s", person.id, exc)
+
+
 class FaceWorker(QObject):
     """
     QObject for face detection, embedding, and person clustering.
@@ -112,6 +145,12 @@ class FaceWorker(QObject):
             cluster_to_person: dict[int, Person] = {}
             person_index = existing_count + 1
 
+            # Pre-compute the highest-confidence face per cluster for thumbnail
+            best_face_per_cluster: dict[int, tuple] = {}
+            for (pid, bbox, emb, conf), lbl in zip(all_faces, labels):
+                if lbl not in best_face_per_cluster or conf > best_face_per_cluster[lbl][2]:
+                    best_face_per_cluster[lbl] = (pid, bbox, conf)
+
             for face_data, cluster_label in zip(all_faces, labels):
                 photo_id, bbox, embedding, confidence = face_data
 
@@ -135,6 +174,7 @@ class FaceWorker(QObject):
                     )
                     session.add(person)
                     session.flush()  # get person.id
+                    _save_face_thumbnail(session, person, best_face_per_cluster[cluster_label])
                     cluster_to_person[cluster_label] = person
 
                 person = cluster_to_person[cluster_label]

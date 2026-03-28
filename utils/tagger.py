@@ -5,7 +5,7 @@ from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from database.db import get_session
-from database.models import Photo, Tag
+from database.models import Photo, Tag, ObjectDetection
 from models.object_detector import ObjectDetector
 from models.scene_classifier import SceneClassifier
 from models.config import DEFAULT_CONFIDENCE
@@ -109,6 +109,16 @@ class TagWorker(QObject):
                         is_manual=False,
                     )
                     session.add(tag)
+                    bx, by, bw, bh = det["bbox"]
+                    session.add(ObjectDetection(
+                        photo_id=photo.id,
+                        label=det["label"],
+                        confidence=det["confidence"],
+                        bbox_x=bx,
+                        bbox_y=by,
+                        bbox_w=bw,
+                        bbox_h=bh,
+                    ))
 
                 # --- 4. Scene classification ---
                 try:

@@ -28,6 +28,7 @@ class Photo(Base):
     tags = relationship("Tag", back_populates="photo", cascade="all, delete-orphan")
     people = relationship("PhotoPerson", back_populates="photo", cascade="all, delete-orphan")
     location = relationship("Location", back_populates="photo", uselist=False, cascade="all, delete-orphan")
+    detections = relationship("ObjectDetection", back_populates="photo", cascade="all, delete-orphan")
 
 
 class Person(Base):
@@ -86,6 +87,23 @@ class Location(Base):
     cluster_id = Column(Integer, nullable=True)
 
     photo = relationship("Photo", back_populates="location")
+
+
+class ObjectDetection(Base):
+    """Stores object bounding boxes from YOLO detection (one row per detected object)."""
+    __tablename__ = "object_detections"
+
+    id = Column(Integer, primary_key=True)
+    photo_id = Column(Integer, ForeignKey("photos.id"), nullable=False)
+    label = Column(String, nullable=False)
+    confidence = Column(Float, nullable=True)
+    # Fractional bounding box coords (0.0–1.0) relative to image dimensions
+    bbox_x = Column(Float, nullable=False)
+    bbox_y = Column(Float, nullable=False)
+    bbox_w = Column(Float, nullable=False)
+    bbox_h = Column(Float, nullable=False)
+
+    photo = relationship("Photo", back_populates="detections")
 
 
 class Album(Base):

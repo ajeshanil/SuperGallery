@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineCore import QWebEngineSettings
     _WEB_ENGINE_AVAILABLE = True
 except ImportError:
     _WEB_ENGINE_AVAILABLE = False
@@ -51,6 +52,9 @@ class MapView(QWidget):
 
         if _WEB_ENGINE_AVAILABLE:
             self._web_view = QWebEngineView()
+            self._web_view.settings().setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+            )
             self._web_view.setStyleSheet("background:#121212;")
             # Show a neutral dark background while no map is loaded
             self._web_view.setHtml(

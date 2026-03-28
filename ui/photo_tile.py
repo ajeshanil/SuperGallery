@@ -49,6 +49,7 @@ class PhotoTile(QWidget):
         self.photo_id = photo_id
         self._file_path = file_path
         self._thumb_loaded = False
+        self._loader = None  # holds Python ref to prevent GC while thread runs
         self.setFixedSize(TILE_SIZE, TILE_SIZE + 22)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._build(date_label)
@@ -78,11 +79,16 @@ class PhotoTile(QWidget):
         super().showEvent(event)
         if not self._thumb_loaded:
             self._thumb_loaded = True
-            loader = _ThumbLoader(self._file_path, THUMB_SIZE)
-            loader.signals.loaded.connect(self._on_thumb_loaded)
-            QThreadPool.globalInstance().start(loader)
+            self._loader = _ThumbLoader(self._file_path, THUMB_SIZE)
+            # setAutoDelete(False): Python owns the object; Qt won't delete it after run().
+            # This prevents the GC from collecting _ThumbLoader (and its _ThumbSignals)
+            # while the worker thread is still executing.
+            self._loader.setAutoDelete(False)
+            self._loader.signals.loaded.connect(self._on_thumb_loaded)
+            QThreadPool.globalInstance().start(self._loader)
 
     def _on_thumb_loaded(self, qimg: QImage):
+        self._loader = None  # safe to release now — run() has finished
         pix = QPixmap.fromImage(qimg) if not qimg.isNull() else _blank_pixmap()
         try:
             self._thumb_label.setPixmap(pix)
