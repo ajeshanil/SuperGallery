@@ -29,6 +29,8 @@ const state = {
   sdIdx: 0,
   renamingPerson: null,
   sseSource: null,
+  runningOp: null,    // current SSE operation string while running
+  runningProgress: { done: 0, total: 0 },
 };
 
 // ── DOM shortcuts ─────────────────────────────────────────
@@ -41,10 +43,11 @@ const D = {
   searchClear:   $('search-clear'),
   importBtn:      $('import-btn'),
   analyzeBtn:     $('analyze-btn'),
-  facesBtn:       $('faces-btn'),
+  analyzePhotoBtn:$('analyze-photo-btn'),
   progressWrap:   $('progress-bar-wrap'),
   progressFill:   $('progress-fill'),
   progressOp:     $('progress-op'),
+  progressFile:   $('progress-file'),
   progressCounts: $('progress-counts'),
   tileSlider:     $('tile-slider'),
   viewGallery:   $('view-gallery'),
@@ -83,11 +86,13 @@ const D = {
   sdSame:        $('sd-same'),
   sdDiff:        $('sd-diff'),
   sdDismiss:     $('sd-dismiss'),
-  importDialog:  $('import-dialog'),
-  importOverlay: $('import-overlay'),
-  importPath:    $('import-path'),
-  importCancel:  $('import-cancel'),
-  importConfirm: $('import-confirm'),
+  importDialog:   $('import-dialog'),
+  importOverlay:  $('import-overlay'),
+  importPath:     $('import-path'),
+  importCancel:   $('import-cancel'),
+  importConfirm:  $('import-confirm'),
+  resetAnalysisBtn: $('reset-analysis-btn'),
+  resetAllBtn:      $('reset-all-btn'),
   renameDialog:  $('rename-dialog'),
   renameOverlay: $('rename-overlay'),
   renameInput:   $('rename-input'),
@@ -108,6 +113,75 @@ function initScrollObserver() {
   obs.observe(D.loadSentinel);
 }
 
+// ── Tag browser ───────────────────────────────────────────
+const TAG_CAT_ORDER = ['People','Objects','Scenes','Camera','Date','Location','PhotoType'];
+let _tagCounts = {};       // { category: [{label, count}, …] }
+let _activeCat = 'Objects';
+
+async function loadTagCounts() {
+  try {
+    _tagCounts = await fetch('/api/tags/counts').then(r => r.json());
+    renderTagBrowser();
+  } catch(_) {}
+}
+
+function renderTagBrowser() {
+  const catTabs = $('tag-cat-tabs');
+  const chipsRow = $('tag-chips-row');
+  const clearBtn = $('tag-clear-btn');
+
+  // Category tabs — only show categories that have data
+  const cats = TAG_CAT_ORDER.filter(c => _tagCounts[c] && _tagCounts[c].length > 0);
+  catTabs.innerHTML = cats.map(c => {
+    const activeFilters = state.tagFilters[c] && state.tagFilters[c].length > 0;
+    return `<button class="tag-cat-btn${_activeCat === c ? ' active' : ''}" data-cat="${c}">
+      ${c}${activeFilters ? ' ●' : ''}
+    </button>`;
+  }).join('');
+  catTabs.querySelectorAll('.tag-cat-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _activeCat = btn.dataset.cat;
+      renderTagBrowser();
+    });
+  });
+
+  // Chips for active category
+  const items = _tagCounts[_activeCat] || [];
+  const activeFiltersForCat = state.tagFilters[_activeCat] || [];
+  chipsRow.innerHTML = items.map(({label, count}) => {
+    const isActive = activeFiltersForCat.includes(label);
+    return `<button class="tag-chip${isActive ? ' active' : ''}" data-label="${label}">
+      ${label} <span class="chip-cnt">${count}</span>
+    </button>`;
+  }).join('');
+  chipsRow.querySelectorAll('.tag-chip').forEach(btn => {
+    btn.addEventListener('click', () => toggleTagFilter(_activeCat, btn.dataset.label));
+  });
+
+  // Clear button visibility
+  const hasFilters = Object.values(state.tagFilters).some(arr => arr.length > 0);
+  clearBtn.hidden = !hasFilters;
+}
+
+function toggleTagFilter(category, label) {
+  if (!state.tagFilters[category]) state.tagFilters[category] = [];
+  const idx = state.tagFilters[category].indexOf(label);
+  if (idx >= 0) {
+    state.tagFilters[category].splice(idx, 1);
+    if (state.tagFilters[category].length === 0) delete state.tagFilters[category];
+  } else {
+    state.tagFilters[category].push(label);
+  }
+  renderTagBrowser();
+  resetAndLoad();
+}
+
+function clearAllTagFilters() {
+  state.tagFilters = {};
+  renderTagBrowser();
+  resetAndLoad();
+}
+
 // ── Navigation ────────────────────────────────────────────
 function switchView(v) {
   state.view = v;
@@ -123,6 +197,9 @@ function switchView(v) {
     el.hidden = !on;
     el.classList.toggle('active', on);
   });
+
+  // Hide same/diff bar when leaving People view
+  if (v !== 'people') D.sameDiffBar.hidden = true;
 
   if (v === 'gallery' && !state.personFilter) {
     // Normal gallery — reset only if no photos loaded yet
@@ -265,6 +342,15 @@ function makeTile(photo) {
     }
   }, { rootMargin: '200px' });
   obs.observe(tile);
+
+  // Retry thumbnail if it failed (e.g. requested before bulk generation finished)
+  let _thumbRetries = 0;
+  img.onerror = () => {
+    if (_thumbRetries < 4) {
+      _thumbRetries++;
+      setTimeout(() => { img.src = `/api/photos/${photo.id}/thumb?r=${_thumbRetries}`; }, 2000 * _thumbRetries);
+    }
+  };
 
   // Favorite button overlay
   const favBtn = document.createElement('button');
@@ -507,7 +593,13 @@ function renderMeta(photo) {
 
 function renderTags(tags, photoId) {
   const grouped = {};
-  tags.forEach(t => { (grouped[t.category] = grouped[t.category] || []).push(t); });
+  const hasPeopleTags = tags.some(t => t.category === 'People');
+  tags.forEach(t => {
+    // Suppress the generic "person" object tag when named People tags exist —
+    // face processing already shows who the person is.
+    if (hasPeopleTags && t.category === 'Objects' && t.label.toLowerCase() === 'person') return;
+    (grouped[t.category] = grouped[t.category] || []).push(t);
+  });
 
   D.detailTags.innerHTML = Object.entries(grouped).map(([cat, list]) =>
     `<div class="tag-group">
@@ -540,6 +632,18 @@ function closeDetail() {
 
 // ── People view ───────────────────────────────────────────
 async function loadPeople() {
+  // If face processing is actively scanning, show live progress instead of
+  // the misleading "No people identified yet" message.
+  if (state.runningOp === 'faces') {
+    const { done, total } = state.runningProgress;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    D.peopleGrid.innerHTML =
+      `<div class="loading-msg">
+         Scanning faces… ${done.toLocaleString()} / ${total.toLocaleString()} photos (${pct}%)<br>
+         <small style="color:var(--text3)">People will appear here once clustering is complete.</small>
+       </div>`;
+    return;
+  }
   D.peopleGrid.innerHTML = '<div class="loading-msg">Loading…</div>';
   try {
     const data = await fetch('/api/people').then(r => r.json());
@@ -548,6 +652,69 @@ async function loadPeople() {
   } catch (e) {
     D.peopleGrid.innerHTML = '<div class="empty-msg">Could not load people.</div>';
   }
+}
+
+async function loadSimilarFaces() {
+  const grid = $('similar-grid');
+  grid.innerHTML = '<div class="loading-msg">Loading similar faces\u2026</div>';
+  try {
+    const pairs = await fetch('/api/people/similar').then(r => r.json());
+    if (!pairs.length) {
+      grid.innerHTML = '<div class="empty-msg">No similar face pairs found.<br><small>As more people are identified, potential matches will appear here for review.</small></div>';
+      return;
+    }
+    grid.innerHTML = pairs.map((p, idx) => `
+      <div class="sim-pair" data-idx="${idx}">
+        <div class="sim-face">
+          <img src="/api/people/${p.person_a}/thumb" onerror="this.style.opacity=0.3">
+          <span>${escHtml(p.name_a)}</span>
+        </div>
+        <div class="sim-vs">\u2194</div>
+        <div class="sim-face">
+          <img src="/api/people/${p.person_b}/thumb" onerror="this.style.opacity=0.3">
+          <span>${escHtml(p.name_b)}</span>
+        </div>
+        <div class="sim-actions">
+          <button class="sim-same-btn" data-keep="${p.person_a}" data-remove="${p.person_b}">Same Person</button>
+          <button class="sim-diff-btn">Not Same</button>
+          <div class="sim-score">${Math.round(p.similarity * 100)}% similar</div>
+        </div>
+      </div>
+    `).join('');
+    grid.querySelectorAll('.sim-same-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const pair = btn.closest('.sim-pair');
+        btn.disabled = true; btn.textContent = 'Merging\u2026';
+        try {
+          await fetch('/api/people/merge', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ keep_id: +btn.dataset.keep, remove_id: +btn.dataset.remove }),
+          });
+          pair.style.opacity = '0'; pair.style.transition = 'opacity .3s';
+          setTimeout(() => pair.remove(), 300);
+          loadPeople();
+        } catch(_) { btn.disabled = false; btn.textContent = 'Same Person'; }
+      });
+    });
+    grid.querySelectorAll('.sim-diff-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pair = btn.closest('.sim-pair');
+        pair.style.opacity = '0'; pair.style.transition = 'opacity .3s';
+        setTimeout(() => pair.remove(), 300);
+      });
+    });
+  } catch(_) {
+    grid.innerHTML = '<div class="empty-msg">Could not load similar faces.</div>';
+  }
+}
+
+async function deletePerson(id) {
+  if (!confirm('Delete this person? All their face links and tags will be removed.')) return;
+  try {
+    const r = await fetch(`/api/people/${id}`, { method: 'DELETE' });
+    if (r.ok) { loadPeople(); toast('Person deleted'); }
+    else toast('Delete failed', 'error');
+  } catch(_) { toast('Delete failed', 'error'); }
 }
 
 function renderPeopleGrid(people) {
@@ -559,6 +726,7 @@ function renderPeopleGrid(people) {
 
   D.peopleGrid.innerHTML = people.map(p =>
     `<div class="person-card" data-id="${p.id}" data-name="${escAttr(p.name || '')}">
+      <button class="person-delete-btn" data-id="${p.id}" aria-label="Delete person">&times;</button>
       ${p.has_thumb
         ? `<img class="person-avatar" src="/api/people/${p.id}/thumb"
                alt="${escAttr(p.name || '?')}" loading="lazy"
@@ -576,6 +744,12 @@ function renderPeopleGrid(people) {
   D.peopleGrid.querySelectorAll('.person-card').forEach(el => {
     el.addEventListener('click', () =>
       openPersonGallery({ id: +el.dataset.id, name: el.dataset.name }));
+  });
+  D.peopleGrid.querySelectorAll('.person-delete-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      deletePerson(+btn.dataset.id);
+    });
   });
 }
 
@@ -730,29 +904,92 @@ function onSearchInput() {
   }, 320);
 }
 
+// ── Live refresh during operations ────────────────────────
+// Polls every 2.5 s while an op is running:
+//   • gallery  – appends newly imported/analysed photos without clearing the grid
+//   • detail   – refreshes tags for the currently open photo (live AI tagging)
+let _liveTimer = null;
+
+function startLiveRefresh() {
+  if (_liveTimer) return;
+  _liveTimer = setInterval(liveRefreshTick, 2500);
+}
+
+function stopLiveRefresh() {
+  clearInterval(_liveTimer);
+  _liveTimer = null;
+}
+
+async function liveRefreshTick() {
+  // ── New photos (import) ──────────────────────────────
+  if (state.view === 'gallery' && !state.loading) {
+    try {
+      const params = new URLSearchParams({
+        sort: state.sort, filters: JSON.stringify(buildFilters()),
+        page: 1, page_size: 1,
+      });
+      const { total, pages } = await fetch(`/api/photos?${params}`).then(r => r.json());
+      // Unlock pagination if server has more pages than we know about
+      if (pages > state.totalPages) state.totalPages = pages;
+      // Append any pages we haven't fetched yet
+      if (total > state.photos.length) loadMorePhotos();
+      D.galleryCount.textContent = `${total.toLocaleString()} photos`;
+    } catch (_) {}
+  }
+
+  // ── Live tag refresh for open detail panel ───────────
+  if (state.selectedPhotoId && !D.detailPanel.hidden) {
+    try {
+      const tags = await fetch(`/api/photos/${state.selectedPhotoId}/tags`).then(r => r.json());
+      renderTags(tags, state.selectedPhotoId);
+    } catch (_) {}
+  }
+}
+
 // ── SSE Progress ──────────────────────────────────────────
 function startSSE() {
   if (state.sseSource) { state.sseSource.close(); state.sseSource = null; }
   const src = new EventSource('/api/status/stream');
   state.sseSource = src;
   let wasRunning = false;
+  // Ensure progress bar is hidden until we know something is running
+  hideProgress();
 
   src.onmessage = e => {
     const d = JSON.parse(e.data);
     if (d.running) {
-      wasRunning = true;
+      if (!wasRunning) {
+        wasRunning = true;
+        startLiveRefresh();   // begin incremental updates
+      }
+      state.runningOp = d.operation;
+      state.runningProgress = { done: d.done, total: d.total };
       showProgress(d);
+      // While face-scanning, update People tab with a live status message
+      if (d.operation === 'faces' && state.view === 'people') {
+        const pct = d.total > 0 ? Math.round((d.done / d.total) * 100) : 0;
+        D.peopleGrid.innerHTML =
+          `<div class="loading-msg">
+             Scanning faces… ${d.done.toLocaleString()} / ${d.total.toLocaleString()} photos (${pct}%)<br>
+             <small style="color:var(--text3)">People will appear here once clustering is complete.</small>
+           </div>`;
+      }
     } else {
-      showProgress(d); // briefly show completion label
+      state.runningOp = null;
+      state.runningProgress = { done: 0, total: 0 };
       if (wasRunning) {
         wasRunning = false;
+        stopLiveRefresh();    // stop polling
+        showProgress(d);      // briefly show completion label
         setTimeout(() => {
           hideProgress();
           const done = ['import_done','analyze_done','faces_done','thumbs_done'];
           if (done.includes(d.operation)) {
-            if (state.view === 'gallery') resetAndLoad();
+            if (state.view === 'gallery') resetAndLoad();  // final full refresh
             if (d.operation === 'faces_done') loadPeople();
             else if (state.view === 'people') loadPeople();
+            // Refresh tag browser so new tags from analysis appear as chips
+            loadTagCounts();
           }
         }, 2200);
       }
@@ -762,6 +999,7 @@ function startSSE() {
   src.onerror = () => {
     src.close();
     state.sseSource = null;
+    stopLiveRefresh();
     setTimeout(startSSE, 4000);
   };
 }
@@ -783,8 +1021,11 @@ function showProgress(d) {
   document.body.classList.add('progress-active');
   const label = d.op_label || OP_LABELS[d.operation] || d.operation || '';
   D.progressOp.textContent = label;
+  // Show current filename being processed
+  const fileEl = $('progress-file');
+  if (fileEl) fileEl.textContent = d.current_file || '';
   if (d.total > 0) {
-    D.progressCounts.textContent = `${d.done.toLocaleString()} / ${d.total.toLocaleString()} photos`;
+    D.progressCounts.textContent = `${d.done.toLocaleString()} / ${d.total.toLocaleString()}`;
   } else {
     D.progressCounts.textContent = d.message || '';
   }
@@ -808,21 +1049,50 @@ function openImportDialog() {
 function closeImportDialog() {
   D.importDialog.hidden = true;
   D.importPath.value = '';
+  $('import-random-chk').checked = false;
+  $('import-random-wrap').hidden = true;
 }
 async function confirmImport() {
   const folder = D.importPath.value.trim();
   if (!folder) return;
+  const useRandom = $('import-random-chk').checked;
+  const randomN   = useRandom ? (parseInt($('import-random-n').value) || 30) : 0;
   closeImportDialog();
   try {
     const res  = await fetch('/api/import', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ folder }),
+      body:    JSON.stringify({ folder, random_limit: randomN }),
     });
     const data = await res.json();
     if (data.error) toast(data.error, 'error');
-    else toast('Import started…');
+    else toast(randomN ? `Importing ${randomN} random photos…` : 'Import started…');
   } catch (_) { toast('Import request failed.', 'error'); }
+}
+
+// ── Admin resets ──────────────────────────────────────────
+async function resetAnalysis() {
+  if (!confirm('This will delete all AI tags (Objects, Scenes, People) and face data, then let you re-run analysis. EXIF tags (Date, Camera, Location) are kept.\n\nContinue?')) return;
+  try {
+    const data = await fetch('/api/admin/reset-analysis', { method: 'POST' }).then(r => r.json());
+    if (data.error) { toast(data.error, 'error'); return; }
+    toast(`Reset done — ${data.deleted_tags} tags removed, ${data.deleted_persons} people cleared`);
+    // Refresh the current view
+    if (state.view === 'gallery') resetAndLoad();
+    else if (state.view === 'people') loadPeople();
+  } catch (_) { toast('Reset request failed.', 'error'); }
+}
+async function resetAll() {
+  if (!confirm('⚠️  HARD RESET\n\nThis will delete ALL photos, tags, and people from the database. You will need to re-import everything.\n\nAre you absolutely sure?')) return;
+  try {
+    const data = await fetch('/api/admin/reset-all', { method: 'POST' }).then(r => r.json());
+    if (data.error) { toast(data.error, 'error'); return; }
+    toast('Hard reset complete — database cleared');
+    state.photos = [];
+    state.page = 1;
+    state.totalPages = 1;
+    resetAndLoad();
+  } catch (_) { toast('Reset request failed.', 'error'); }
 }
 
 // ── Analyse ───────────────────────────────────────────────
@@ -834,13 +1104,29 @@ async function startAnalyze() {
   } catch (_) { toast('Request failed.', 'error'); }
 }
 
-// ── Face processing ───────────────────────────────────────
-async function startFaces() {
+// ── Per-photo analysis ────────────────────────────────────
+async function analyzeCurrentPhoto() {
+  const id = state.selectedPhotoId;
+  if (!id) return;
+  const btn = D.analyzePhotoBtn;
+  btn.disabled = true;
+  btn.title = 'Analysing…';
+  toast('Analysing photo…');
   try {
-    const data = await fetch('/api/faces', { method: 'POST' }).then(r => r.json());
-    if (data.error) toast(data.error, 'error');
-    else toast('Face processing started…');
-  } catch (_) { toast('Request failed.', 'error'); }
+    const tags = await fetch(`/api/photos/${id}/analyze`, { method: 'POST' }).then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    renderTags(tags, id);
+    // Refresh tag browser counts after single-photo analysis
+    loadTagCounts();
+    toast('Analysis complete');
+  } catch (_) {
+    toast('Analysis failed.', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.title = 'Re-analyse this photo';
+  }
 }
 
 // ── Rename dialog ─────────────────────────────────────────
@@ -952,11 +1238,18 @@ function init() {
   D.importConfirm.addEventListener('click', confirmImport);
   D.importPath.addEventListener('keydown', e => { if (e.key === 'Enter') confirmImport(); });
 
-  // Analyse
+  // Analyse (full library) + per-photo analyse
   D.analyzeBtn.addEventListener('click', startAnalyze);
+  D.analyzePhotoBtn.addEventListener('click', analyzeCurrentPhoto);
 
-  // Faces
-  D.facesBtn.addEventListener('click', startFaces);
+  // Admin reset buttons
+  D.resetAnalysisBtn.addEventListener('click', resetAnalysis);
+  D.resetAllBtn.addEventListener('click', resetAll);
+
+  // Random import toggle
+  $('import-random-chk').addEventListener('change', function() {
+    $('import-random-wrap').hidden = !this.checked;
+  });
 
   // Detail panel
   D.closeDetail.addEventListener('click', closeDetail);
@@ -974,10 +1267,30 @@ function init() {
   // Back to people
   D.backToPeople.addEventListener('click', backToPeople);
 
+  // People tabs
+  document.querySelectorAll('.people-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.people-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      if (tab.dataset.tab === 'all') {
+        $('people-grid').hidden = false;
+        $('similar-grid').hidden = true;
+      } else {
+        $('people-grid').hidden = true;
+        $('similar-grid').hidden = false;
+        loadSimilarFaces();
+      }
+    });
+  });
+
   // Same/diff bar
   D.sdSame.addEventListener('click', onSamePerson);
   D.sdDiff.addEventListener('click', dismissPair);
-  D.sdDismiss.addEventListener('click', dismissPair);
+  D.sdDismiss.addEventListener('click', () => {
+    state.sdPairs = [];
+    state.sdIdx = 0;
+    D.sameDiffBar.hidden = true;
+  });
 
   // Rename
   D.renameOverlay.addEventListener('click', closeRenameDialog);
@@ -1070,6 +1383,34 @@ function init() {
 
   // SSE for progress
   startSSE();
+
+  // Tag browser
+  loadTagCounts();
+  $('tag-clear-btn').addEventListener('click', clearAllTagFilters);
+
+  // Listen for postMessage from the map iframe — clicking a photo thumbnail
+  // in a map popup sends { photoId } so we can open the detail panel.
+  window.addEventListener('message', e => {
+    if (e.data && e.data.photoId) {
+      const id = e.data.photoId;
+      // If we have the photo in memory open it straight away, otherwise
+      // switch to gallery, let photos load, then open.
+      const found = state.photos.find(p => p.id === id);
+      if (found) {
+        openDetail(found);
+      } else {
+        switchView('gallery');
+        // Wait briefly for photos to render then open the detail
+        setTimeout(async () => {
+          const res = await fetch(`/api/photos?page=1&page_size=1&filters=${encodeURIComponent(JSON.stringify({}))}`).then(r=>r.json());
+          // Fetch the specific photo metadata
+          const single = await fetch(`/api/photos?page=1&page_size=9999`).then(r=>r.json());
+          const p = (single.photos || []).find(x => x.id === id);
+          if (p) openDetail(p);
+        }, 500);
+      }
+    }
+  });
 
   // Initial view
   switchView('gallery');

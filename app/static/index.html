@@ -41,6 +41,7 @@
   </div>
   <div id="progress-info">
     <span id="progress-op"></span>
+    <span id="progress-file"></span>
     <span id="progress-counts"></span>
   </div>
 </div>
@@ -65,9 +66,13 @@
 
     <div class="sidebar-sep"></div>
 
-    <button class="nav-btn" id="faces-btn">
-      <svg viewBox="0 0 24 24"><path d="M9 11.75c-.69 0-1.25.56-1.25 1.25s.56 1.25 1.25 1.25 1.25-.56 1.25-1.25S9.69 11.75 9 11.75zm6 0c-.69 0-1.25.56-1.25 1.25s.56 1.25 1.25 1.25 1.25-.56 1.25-1.25S15.69 11.75 15 11.75zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8 0-.29.02-.58.05-.86 2.36-1.05 4.23-2.98 5.21-5.37C11.07 8.33 14.05 10 17.42 10c.78 0 1.53-.09 2.25-.26.21.71.33 1.47.33 2.26 0 4.41-3.59 8-8 8z"/></svg>
-      Process Faces
+    <button class="nav-btn danger-btn" id="reset-analysis-btn" title="Re-run AI analysis from scratch">
+      <svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+      Reset Analysis
+    </button>
+    <button class="nav-btn danger-btn" id="reset-all-btn" title="Delete all photos and data">
+      <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      Reset All
     </button>
   </nav>
 
@@ -99,6 +104,15 @@
         </button>
       </div>
 
+      <!-- Tag browser: category tabs + chips for filtering -->
+      <div id="tag-browser">
+        <div id="tag-browser-header">
+          <div id="tag-cat-tabs"></div>
+          <button id="tag-clear-btn" hidden>✕ Clear filters</button>
+        </div>
+        <div id="tag-chips-row"></div>
+      </div>
+
       <!-- Controls bar -->
       <div id="gallery-controls">
         <select id="sort-select">
@@ -125,7 +139,12 @@
       <div id="people-header">
         <h2>People</h2>
       </div>
+      <div id="people-tabs">
+        <button class="people-tab active" data-tab="all">All People</button>
+        <button class="people-tab" data-tab="similar">Similar Faces</button>
+      </div>
       <div id="people-grid"></div>
+      <div id="similar-grid" hidden></div>
     </div>
 
     <!-- ── Map view ── -->
@@ -152,6 +171,9 @@
         <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
       </button>
       <button id="bbox-toggle" hidden>Hide boxes</button>
+      <button id="analyze-photo-btn" class="icon-btn" title="Re-analyse this photo">
+        <svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+      </button>
     </div>
 
     <div id="detail-photo-wrap">
@@ -200,6 +222,15 @@
     <h2>Import Folder</h2>
     <p>Enter the full path to the folder on this computer:</p>
     <input id="import-path" type="text" placeholder="C:\Users\you\Pictures">
+    <label class="dialog-opt-label">
+      <input id="import-random-chk" type="checkbox">
+      Import a random sample only
+    </label>
+    <div id="import-random-wrap" hidden style="margin-top:6px">
+      <input id="import-random-n" type="number" min="1" max="9999" value="30"
+             placeholder="Number of photos" style="width:120px">
+      <span style="font-size:12px;color:var(--text-muted);margin-left:8px">random photos</span>
+    </div>
     <div class="dialog-actions">
       <button id="import-cancel" class="btn-ghost">Cancel</button>
       <button id="import-confirm" class="btn-accent">Import</button>

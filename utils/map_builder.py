@@ -53,16 +53,55 @@ def build_map(photos_with_coords: list[dict], output_path: str) -> Optional[str]
     heat_data = [[p["lat"], p["lng"]] for p in photos_with_coords]
     HeatMap(heat_data, name="Photo Density").add_to(fmap)
 
-    # Clustered marker layer
-    marker_cluster = MarkerCluster(name="Photos").add_to(fmap)
+    # Clustered marker layer — each marker IS the photo thumbnail (DivIcon),
+    # not a generic pin.  At low zoom the cluster shows a count badge; when
+    # zoomed in enough the individual thumbnail tiles appear.
+    marker_cluster = MarkerCluster(
+        name="Photos",
+        options={
+            "disableClusteringAtZoom": 14,   # show individual thumbs from zoom 14+
+            "maxClusterRadius": 60,
+        },
+    ).add_to(fmap)
+
     for photo in photos_with_coords:
         filename = Path(photo["file_path"]).name
-        date_str = str(photo.get("date", ""))
-        popup_html = f"<b>{filename}</b><br>{date_str}"
+        date_str = str(photo.get("date", ""))[:10]  # YYYY-MM-DD
+        photo_id = photo["id"]
+
+        # ── Marker icon: 64×64 thumbnail tile ──
+        icon_html = (
+            f'<div onclick="window.parent.postMessage({{photoId:{photo_id}}},\'*\')" '
+            f'     style="width:60px;height:60px;overflow:hidden;border-radius:6px;'
+            f'            border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.55);'
+            f'            cursor:pointer;background:#1a1a1a">'
+            f'  <img src="/api/photos/{photo_id}/thumb" '
+            f'       style="width:100%;height:100%;object-fit:cover">'
+            f'</div>'
+        )
+        icon = folium.DivIcon(
+            html=icon_html,
+            icon_size=(64, 64),
+            icon_anchor=(32, 32),   # centre anchor so thumb is over the coord
+            class_name="photo-thumb-marker",
+        )
+
+        # ── Popup: larger preview + metadata ──
+        popup_html = (
+            f'<div style="text-align:center;font-family:sans-serif;padding:4px">'
+            f'<img src="/api/photos/{photo_id}/thumb" '
+            f'     style="max-width:200px;max-height:180px;border-radius:6px;'
+            f'            display:block;margin:0 auto 8px;cursor:pointer" '
+            f'     onclick="window.parent.postMessage({{photoId:{photo_id}}},\'*\')">'
+            f'<div style="font-size:12px;color:#555">{date_str}</div>'
+            f'<div style="font-size:11px;color:#888;word-break:break-all">{filename}</div>'
+            f'</div>'
+        )
         folium.Marker(
             location=[photo["lat"], photo["lng"]],
-            popup=folium.Popup(popup_html, max_width=250),
-            tooltip=filename,
+            icon=icon,
+            popup=folium.Popup(popup_html, max_width=240),
+            tooltip=date_str,
         ).add_to(marker_cluster)
 
     folium.LayerControl().add_to(fmap)

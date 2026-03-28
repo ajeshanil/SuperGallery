@@ -1,17 +1,28 @@
-"""Face detection and recognition using facenet-pytorch."""
+"""Face detection and recognition using facenet-pytorch.
+
+Key quality controls
+--------------------
+* EXIF orientation is corrected before detection so portrait-mode photos are
+  processed upright — preventing rotated faces from getting different embeddings.
+* MTCNN thresholds are tightened ([0.8, 0.9, 0.9]) to suppress false positives
+  such as logos, text, or background patches.
+* A minimum face-size filter (FACE_MIN_FRACTION of the shorter image dimension)
+  skips tiny, probably-spurious detections.
+* A minimum face probability (FACE_CONFIDENCE) is applied after MTCNN detection.
+"""
 import logging
 from typing import Optional
 
 import numpy as np
 
-from models.config import DEFAULT_CONFIDENCE
+from models.config import FACE_CONFIDENCE, FACE_MIN_FRACTION, FACE_CLUSTER_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
 try:
     from facenet_pytorch import MTCNN, InceptionResnetV1
     import torch
-    from PIL import Image as _PILImage
+    from PIL import Image as _PILImage, ImageOps as _ImageOps
     _FACENET_AVAILABLE = True
 except (ImportError, OSError, Exception) as _e:
     _FACENET_AVAILABLE = False
@@ -35,7 +46,7 @@ except ImportError:
 class FaceRecognizer:
     """Face detector and embedder with lazy model loading."""
 
-    def __init__(self, confidence: float = DEFAULT_CONFIDENCE) -> None:
+    def __init__(self, confidence: float = FACE_CONFIDENCE) -> None:
         self.confidence = confidence
         self._mtcnn = None
         self._resnet = None
@@ -51,6 +62,13 @@ class FaceRecognizer:
             keep_all=True,
             post_process=False,
             select_largest=False,
+            # Larger minimum face size (pixels) avoids tiny artefact detections.
+            # At 60 px a face must be at least 60x60 pixels to be considered.
+            min_face_size=60,
+            # Tighter three-stage thresholds: P-Net, R-Net, O-Net.
+            # Default is [0.6, 0.7, 0.7]; raising to [0.8, 0.9, 0.9] cuts false positives
+            # like logos, backgrounds, and reflections.
+            thresholds=[0.8, 0.9, 0.9],
         )
         self._resnet = InceptionResnetV1(pretrained="vggface2").eval()
 
@@ -74,11 +92,18 @@ class FaceRecognizer:
 
         try:
             img = _PILImage.open(image_path).convert("RGB")
+            # Apply EXIF orientation so portrait-mode shots are upright before
+            # detection — otherwise MTCNN sees a rotated face and produces a
+            # different embedding than the same face shot in landscape mode,
+            # causing the same person to appear as two separate people.
+            img = _ImageOps.exif_transpose(img)
         except Exception as exc:
             logger.error("Failed to open image %s: %s", image_path, exc)
             return []
 
         img_w, img_h = img.size
+        # Minimum face dimension: FACE_MIN_FRACTION of shorter image side
+        min_dim = min(img_w, img_h) * FACE_MIN_FRACTION
 
         try:
             boxes, probs = self._mtcnn.detect(img)
@@ -91,16 +116,27 @@ class FaceRecognizer:
 
         results: list[dict] = []
         for box, prob in zip(boxes, probs):
+            # ── Quality gate 1: minimum MTCNN probability ──
             if prob is None or float(prob) < self.confidence:
                 continue
 
             x1, y1, x2, y2 = [float(v) for v in box]
+            face_w = x2 - x1
+            face_h = y2 - y1
+
+            # ── Quality gate 2: minimum face size ──
+            if face_w < min_dim or face_h < min_dim:
+                logger.debug(
+                    "Skipping tiny face %.0fx%.0f (min %.0f) in %s",
+                    face_w, face_h, min_dim, image_path,
+                )
+                continue
 
             # Fractional bounding box
             fx = x1 / img_w
             fy = y1 / img_h
-            fw = (x2 - x1) / img_w
-            fh = (y2 - y1) / img_h
+            fw = face_w / img_w
+            fh = face_h / img_h
 
             # Crop and embed
             try:
@@ -132,7 +168,7 @@ class FaceRecognizer:
 
 def cluster_embeddings(
     embeddings: list[np.ndarray],
-    threshold: float = 0.7,
+    threshold: float = FACE_CLUSTER_THRESHOLD,
 ) -> list[int]:
     """
     Cluster face embeddings using AgglomerativeClustering with cosine distance.

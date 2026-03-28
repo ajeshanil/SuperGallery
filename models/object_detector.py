@@ -111,11 +111,11 @@ class ObjectDetector:
             return None
 
         if len(persons) >= 2:
-            return "group photo"
+            return "Group photo"
 
         # Exactly one person
         bbox = persons[0]["bbox"]
         area = bbox[2] * bbox[3]  # w * h
         if area > 0.4:
-            return "selfie"
-        return "portrait"
+            return "Selfie"
+        return "Portrait"

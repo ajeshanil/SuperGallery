@@ -1,115 +1,151 @@
-"""Scene classification using torchvision MobileNetV3-Large (ImageNet pretrained)."""
-import logging
-from typing import Optional
+"""Scene classification using MIT Places365 ResNet18.
 
-from models.config import DEFAULT_CONFIDENCE
+Downloads the ResNet18-Places365 checkpoint (~45 MB) and the category list on
+first use, caching both to ~/.supergallery/models/.
+
+Places365 was trained on 1.8 M images spanning 365 real-world scene categories
+(beach, mountain, kitchen, street, forest, …) — a much better fit for a photo
+gallery than ImageNet-based classifiers.
+
+Reference: http://places2.csail.mit.edu
+"""
+from __future__ import annotations
+
+import logging
+import urllib.request
+from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_MODEL_URL = (
+    "http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar"
+)
+_CATS_URL = (
+    "https://raw.githubusercontent.com/CSAILVision/places365/master/"
+    "categories_places365.txt"
+)
+
+_MODELS_DIR = Path.home() / ".supergallery" / "models"
+
 try:
     import torch
-    from torchvision import models, transforms
-    from torchvision.models import MobileNet_V3_Large_Weights
+    import torchvision.models as _tvm
+    import torchvision.transforms as _tvt
     from PIL import Image as _PILImage
     _TORCH_AVAILABLE = True
 except (ImportError, OSError, Exception) as _e:
     _TORCH_AVAILABLE = False
     logger.warning(
-        "torch/torchvision unavailable (%s). Scene classification will return empty results. "
-        "Install with: pip install torch torchvision pillow",
+        "torch/torchvision unavailable (%s). Scene classification will return "
+        "empty results. Install with: pip install torch torchvision pillow",
         _e,
     )
 
-# Maps substrings of ImageNet class names to human-readable scene categories.
-_IMAGENET_TO_SCENE: dict[str, str] = {
-    # nature / outdoor
-    "seashore": "beach",
-    "beach": "beach",
-    "reef": "underwater",
-    "alp": "mountain",
-    "volcano": "mountain",
-    "cliff": "mountain",
-    "valley": "landscape",
-    "lakeside": "waterside",
-    "dock": "waterside",
-    "tree": "forest",
-    "jungle": "forest",
-    "rainforest": "forest",
-    "desert": "desert",
-    "dune": "desert",
-    "snowfield": "snowy",
-    "ski": "snowy",
-    "sky": "sky",
-    "cloud": "sky",
-    # urban / built
-    "street": "urban",
-    "traffic": "urban",
-    "bridge": "urban",
-    "building": "urban",
-    "skyscraper": "urban",
-    "restaurant": "indoor",
-    "library": "indoor",
-    "classroom": "indoor",
-    "gym": "indoor",
-    "kitchen": "indoor",
-    "bedroom": "indoor",
-    "office": "indoor",
-    "bookcase": "indoor",
-    # transport
-    "airport": "transport",
-    "train": "transport",
-}
+
+def _fetch(url: str, dest: Path) -> None:
+    """Download *url* to *dest* with a simple progress log."""
+    logger.info("Downloading %s → %s …", url, dest)
+    urllib.request.urlretrieve(url, str(dest))
+    logger.info("Download complete: %s (%.1f MB)", dest.name, dest.stat().st_size / 1e6)
 
 
-def _map_class_to_scene(class_name: str) -> str:
+def _load_categories(cats_path: Path) -> list[str]:
+    """Parse Places365 category file into clean human-readable labels.
+
+    The file format is::
+
+        /a/airfield 0
+        /a/alcove 1
+        /a/airport_terminal 2
+        ...
+
+    We parse the numeric index explicitly and sort by it so the returned list is
+    always correctly ordered regardless of line order in the file.
     """
-    Map an ImageNet class name to a scene category.
-    Checks whether any key in _IMAGENET_TO_SCENE is a substring of class_name
-    (case-insensitive). Returns the first match or the raw class name.
-    """
-    lower = class_name.lower()
-    for key, scene in _IMAGENET_TO_SCENE.items():
-        if key in lower:
-            return scene
-    return class_name
+    entries: list[tuple[int, str]] = []
+    with open(cats_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(" ")
+            if len(parts) < 2:
+                continue
+            try:
+                idx = int(parts[-1])
+            except ValueError:
+                continue
+            raw = parts[0]   # e.g. /a/airfield  or /f/forest/broadleaf
+            # Strip leading /x/ letter-bucket prefix, keep meaningful parts
+            path_parts = [p for p in raw.split("/") if p and len(p) > 1]
+            label = path_parts[-1].replace("_", " ") if path_parts else raw
+            entries.append((idx, label))
+
+    # Sort by class index to guarantee correct model↔label alignment
+    entries.sort(key=lambda t: t[0])
+    return [label for _, label in entries]
 
 
 class SceneClassifier:
-    """MobileNetV3-Large scene classifier with lazy model loading."""
+    """MIT Places365 ResNet18 scene classifier with lazy model loading."""
 
     def __init__(
         self,
-        confidence: float = DEFAULT_CONFIDENCE,
+        confidence: float = 0.10,
         top_k: int = 3,
     ) -> None:
         self.confidence = confidence
         self.top_k = top_k
-        self._model = None
-        self._transform = None
-        self._class_names: list[str] = []
+        self._model: Optional[object] = None
+        self._transform: Optional[object] = None
+        self._classes: list[str] = []
 
+    # ------------------------------------------------------------------
     def _load(self) -> None:
-        """Lazy-load the MobileNetV3-Large model in eval mode."""
         if self._model is not None:
             return
         if not _TORCH_AVAILABLE:
             return
 
-        weights = MobileNet_V3_Large_Weights.IMAGENET1K_V2
-        self._model = models.mobilenet_v3_large(weights=weights)
-        self._model.eval()
+        _MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        model_path = _MODELS_DIR / "resnet18_places365.pth.tar"
+        cats_path  = _MODELS_DIR / "categories_places365.txt"
 
-        self._transform = weights.transforms()
-        self._class_names = weights.meta["categories"]
+        if not cats_path.exists():
+            _fetch(_CATS_URL, cats_path)
+        if not model_path.exists():
+            _fetch(_MODEL_URL, model_path)
 
+        self._classes = _load_categories(cats_path)
+
+        import torch
+        import torchvision.models as tvm
+        import torchvision.transforms as tvt
+
+        # ResNet18 with 365 output classes
+        model = tvm.resnet18(weights=None)
+        model.fc = torch.nn.Linear(model.fc.in_features, 365)
+
+        checkpoint = torch.load(str(model_path), map_location="cpu", weights_only=False)
+        state_dict = {
+            k.replace("module.", ""): v
+            for k, v in checkpoint["state_dict"].items()
+        }
+        model.load_state_dict(state_dict)
+        model.eval()
+        self._model = model
+
+        self._transform = tvt.Compose([
+            tvt.Resize((256, 256)),
+            tvt.CenterCrop(224),
+            tvt.ToTensor(),
+            tvt.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+
+    # ------------------------------------------------------------------
     def classify(self, image_path: str) -> list[dict]:
-        """
-        Classify the scene in an image.
-
-        Returns up to top_k results as:
-            [{"label": str, "confidence": float}, ...]
-        Only results meeting the confidence threshold are included.
-        """
+        """Return up to *top_k* scene labels above *confidence* threshold."""
         if not _TORCH_AVAILABLE:
             return []
 
@@ -120,10 +156,11 @@ class SceneClassifier:
         try:
             img = _PILImage.open(image_path).convert("RGB")
         except Exception as exc:
-            logger.error("Failed to open image %s: %s", image_path, exc)
+            logger.error("Failed to open %s: %s", image_path, exc)
             return []
 
         try:
+            import torch
             tensor = self._transform(img).unsqueeze(0)
             with torch.no_grad():
                 logits = self._model(tensor)
@@ -133,13 +170,12 @@ class SceneClassifier:
             return []
 
         top_probs, top_indices = torch.topk(probs, k=min(self.top_k, len(probs)))
-
         results: list[dict] = []
         for prob, idx in zip(top_probs.tolist(), top_indices.tolist()):
             if prob < self.confidence:
                 continue
-            raw_name = self._class_names[idx]
-            scene_label = _map_class_to_scene(raw_name)
-            results.append({"label": scene_label, "confidence": round(prob, 4)})
-
+            results.append({
+                "label":      self._classes[idx],
+                "confidence": round(prob, 4),
+            })
         return results

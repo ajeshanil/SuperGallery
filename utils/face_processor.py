@@ -16,12 +16,14 @@ def _save_face_thumbnail(session, person: "Person", face_data: tuple) -> None:
     """Crop the best face detection and save it as person.thumbnail_path."""
     photo_id, bbox, _confidence = face_data
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
         from pathlib import Path
         photo = session.get(Photo, photo_id)
         if not photo:
             return
         img = Image.open(photo.file_path).convert("RGB")
+        # Apply EXIF orientation so saved thumbnails are always upright
+        img = ImageOps.exif_transpose(img)
         img_w, img_h = img.size
         x, y, w, h = bbox
         x1 = int(x * img_w)
