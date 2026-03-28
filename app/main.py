@@ -1,10 +1,15 @@
 """SuperGallery — entry point."""
+import os
 import sys
 import logging
 from pathlib import Path
 
 # Ensure repo root is on sys.path when running as `python app/main.py`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Suppress Qt's CSS parser warnings about unsupported properties (e.g. overflow)
+# Must be set before Qt is imported.
+os.environ.setdefault("QT_LOGGING_RULES", "qt.gui.styleparser.warning=false")
 
 _LOG_DIR = Path.home() / ".supergallery"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -19,6 +24,14 @@ logging.basicConfig(
 # Suppress verbose PIL/pillow debug noise
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("PIL.TiffImagePlugin").setLevel(logging.WARNING)
+
+# Pre-load torch before Qt to avoid DLL search path conflicts on Windows.
+# Qt loads its own native DLLs at import time, which can disrupt torch's
+# c10.dll resolution when ultralytics imports torch later.
+try:
+    import torch as _torch  # noqa: F401
+except Exception:
+    pass
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon

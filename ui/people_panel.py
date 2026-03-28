@@ -88,7 +88,7 @@ class PersonCard(QFrame):
         thumb = QLabel()
         thumb.setFixedSize(52, 52)
         thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        thumb.setStyleSheet("border-radius:26px; background:#1a1a1a; overflow:hidden;")
+        thumb.setStyleSheet("border-radius:26px; background:#1a1a1a;")
         if person.thumbnail_path and Path(person.thumbnail_path).exists():
             pix = _load_thumbnail(person.thumbnail_path, 52)
         else:
