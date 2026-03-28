@@ -653,6 +653,83 @@ def test_map_builder_graceful():
         _pass("get_map_html() returns path", result2)
 
 
+def test_gui_smoke():
+    """
+    Headless GUI smoke test using Qt's 'offscreen' platform.
+    Verifies key widgets can be instantiated without crashing.
+    """
+    _section("GUI smoke (offscreen)")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    try:
+        from PyQt6.QtWidgets import QApplication
+        _app = QApplication.instance() or QApplication(sys.argv)
+    except Exception as exc:
+        _fail("QApplication (offscreen)", f"{type(exc).__name__}: {exc}")
+        return
+
+    # GalleryWindow
+    try:
+        from ui.gallery_window import GalleryWindow
+        win = GalleryWindow()
+        _pass("GalleryWindow instantiates")
+        win.close()
+    except Exception as exc:
+        _fail("GalleryWindow instantiates", f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
+
+    # TagPanel
+    try:
+        from ui.tag_panel import TagPanel
+        panel = TagPanel()
+        _pass("TagPanel instantiates")
+    except Exception as exc:
+        _fail("TagPanel instantiates", f"{type(exc).__name__}: {exc}")
+
+    # SearchBar
+    try:
+        from ui.search_bar import SearchBar
+        sb = SearchBar()
+        _pass("SearchBar instantiates")
+    except Exception as exc:
+        _fail("SearchBar instantiates", f"{type(exc).__name__}: {exc}")
+
+    # RestructureDialog (without showing it)
+    try:
+        from ui.restructure_dialog import RestructureDialog
+        dlg = RestructureDialog()
+        _pass("RestructureDialog instantiates and auto-previews")
+        dlg.close()
+    except Exception as exc:
+        _fail("RestructureDialog instantiates", f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
+
+    # AlbumPanel
+    try:
+        from ui.album_panel import AlbumPanel
+        ap = AlbumPanel()
+        _pass("AlbumPanel instantiates")
+    except Exception as exc:
+        _fail("AlbumPanel instantiates", f"{type(exc).__name__}: {exc}")
+
+    # PeoplePanel
+    try:
+        from ui.people_panel import PeoplePanel
+        pp = PeoplePanel()
+        _pass("PeoplePanel instantiates")
+    except Exception as exc:
+        _fail("PeoplePanel instantiates", f"{type(exc).__name__}: {exc}")
+
+    # MapView
+    try:
+        from ui.map_view import MapView
+        mv = MapView()
+        _pass("MapView instantiates")
+    except Exception as exc:
+        _fail("MapView instantiates", f"{type(exc).__name__}: {exc}")
+
+
 def test_db_integrity():
     _section("Database integrity")
     from database.db import get_session
@@ -729,6 +806,7 @@ def main():
     test_face_worker_graceful()
     test_face_worker_end_to_end()
     test_map_builder_graceful()
+    test_gui_smoke()
     test_db_integrity()
 
     # -- Summary ---------------------------------------------------------------

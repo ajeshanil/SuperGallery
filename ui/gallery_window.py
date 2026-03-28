@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from PyQt6.QtCore import Qt, QThread, pyqtSlot
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
