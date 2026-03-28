@@ -11,6 +11,7 @@ const state = {
   view: 'gallery',
   sort: 'month_desc',
   search: '',
+  favoritesOnly: false,
   personFilter: null,       // { id, name } when viewing a person's photos
   tagFilters: {},           // { category: [label, …] } active chip filters
   page: 1,                  // 1-based, matches API
@@ -22,6 +23,8 @@ const state = {
   detailImg: null,
   detailDetections: [],
   showBboxes: true,
+  lightboxScale: 1,
+  lightboxPinchDist: null,
   sdPairs: [],
   sdIdx: 0,
   renamingPerson: null,
@@ -52,6 +55,7 @@ const D = {
   phName:        $('ph-name'),
   phCount:       $('ph-count'),
   phChips:       $('ph-chips'),
+  filterChipsBar:$('filter-chips-bar'),
   galleryControls:$('gallery-controls'),
   sortSelect:    $('sort-select'),
   galleryCount:  $('gallery-count'),
@@ -61,6 +65,9 @@ const D = {
   mapFrame:      $('map-frame'),
   detailPanel:   $('detail-panel'),
   closeDetail:   $('close-detail'),
+  detailPrev:    $('detail-prev'),
+  detailNext:    $('detail-next'),
+  detailFav:     $('detail-fav'),
   detailFilename:$('detail-filename'),
   bboxToggle:    $('bbox-toggle'),
   photoCanvas:   $('photo-canvas'),
@@ -86,6 +93,11 @@ const D = {
   renameInput:   $('rename-input'),
   renameCancel:  $('rename-cancel'),
   renameConfirm: $('rename-confirm'),
+  lightbox:      $('lightbox'),
+  lightboxImg:   $('lightbox-img'),
+  lightboxClose: $('lightbox-close'),
+  lightboxPrev:  $('lightbox-prev'),
+  lightboxNext:  $('lightbox-next'),
 };
 
 // ── Scroll observer ───────────────────────────────────────
@@ -148,13 +160,29 @@ function monthLabel(dateStr) {
   return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 }
 
+// ── Skeleton tiles ────────────────────────────────────────
+function showSkeletons() {
+  D.photoGrid.innerHTML = '';
+  const tileSize = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--tile-size')) || 160;
+  // Fill roughly 2 rows worth of skeletons
+  const cols  = Math.max(1, Math.floor((D.photoGrid.clientWidth || 800) / (tileSize + 6)));
+  const count = cols * 3;
+  for (let i = 0; i < count; i++) {
+    const tile = document.createElement('div');
+    tile.className = 'photo-tile skeleton';
+    tile.style.width  = tileSize + 'px';
+    tile.style.height = tileSize + 'px';
+    D.photoGrid.appendChild(tile);
+  }
+}
+
 // ── Photo loading ─────────────────────────────────────────
 function resetAndLoad() {
   state.page = 1;
   state.totalPages = 1;
   state.photos = [];
   state.lastMonthLabel = null;
-  D.photoGrid.innerHTML = '';
+  showSkeletons();
   D.galleryCount.textContent = '';
   loadMorePhotos();
 }
@@ -170,6 +198,7 @@ async function loadMorePhotos() {
     page:      state.page,
     page_size: PAGE_SIZE,
   });
+  if (state.favoritesOnly) params.set('favorite', 'true');
 
   try {
     const res  = await fetch(`/api/photos?${params}`);
@@ -222,6 +251,7 @@ function appendPhotos(photos, isFirst) {
 function makeTile(photo) {
   const tile = document.createElement('div');
   tile.className = 'photo-tile';
+  tile.dataset.photoId = photo.id;
 
   const img = document.createElement('img');
   img.alt = photo.filename || '';
@@ -236,7 +266,19 @@ function makeTile(photo) {
   }, { rootMargin: '200px' });
   obs.observe(tile);
 
+  // Favorite button overlay
+  const favBtn = document.createElement('button');
+  favBtn.className = 'tile-fav-btn' + (photo.is_favorite ? ' favorited' : '');
+  favBtn.dataset.id = photo.id;
+  favBtn.setAttribute('aria-label', 'Favorite');
+  favBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+  favBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleFavorite(photo.id);
+  });
+
   tile.appendChild(img);
+  tile.appendChild(favBtn);
   tile.addEventListener('click', () => openDetail(photo.id, photo));
   return tile;
 }
@@ -251,6 +293,12 @@ async function openDetail(photoId, photoHint) {
 
   D.detailFilename.textContent = photo.filename || `Photo ${photoId}`;
   D.detailPanel.hidden = false;
+  D.detailFav.classList.toggle('favorited', !!photo.is_favorite);
+
+  // Update nav arrow availability
+  const idx = state.photos.findIndex(p => p.id === photoId);
+  D.detailPrev.disabled = idx <= 0;
+  D.detailNext.disabled = idx < 0 || idx >= state.photos.length - 1;
 
   // Fetch tags + detections in parallel
   const [tags, dets] = await Promise.all([
@@ -273,6 +321,12 @@ function drawCanvas(photoId) {
   const ctx    = canvas.getContext('2d');
   const wrap   = canvas.parentElement;
 
+  // Remove old click listener by cloning
+  const newCanvas = canvas.cloneNode(true);
+  wrap.replaceChild(newCanvas, canvas);
+  D.photoCanvas = newCanvas;
+  const ctx2 = newCanvas.getContext('2d');
+
   const img = new Image();
   img.src = `/api/photos/${photoId}/image`;
   state.detailImg = img;
@@ -281,11 +335,14 @@ function drawCanvas(photoId) {
     const maxW  = wrap.clientWidth  || 400;
     const maxH  = wrap.clientHeight || 500;
     const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
-    canvas.width  = Math.round(img.naturalWidth  * scale);
-    canvas.height = Math.round(img.naturalHeight * scale);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    if (state.showBboxes) paintBboxes(ctx, canvas.width, canvas.height);
+    newCanvas.width  = Math.round(img.naturalWidth  * scale);
+    newCanvas.height = Math.round(img.naturalHeight * scale);
+    ctx2.drawImage(img, 0, 0, newCanvas.width, newCanvas.height);
+    if (state.showBboxes) paintBboxes(ctx2, newCanvas.width, newCanvas.height);
   };
+
+  newCanvas.style.cursor = 'zoom-in';
+  newCanvas.addEventListener('click', openLightbox);
 }
 
 const BOX_COLORS = [
@@ -321,6 +378,119 @@ function repaintCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(state.detailImg, 0, 0, canvas.width, canvas.height);
   if (state.showBboxes) paintBboxes(ctx, canvas.width, canvas.height);
+}
+
+// ── Photo navigation ──────────────────────────────────────
+function navPhoto(delta) {
+  if (state.selectedPhotoId === null) return;
+  const idx = state.photos.findIndex(p => p.id === state.selectedPhotoId);
+  if (idx === -1) return;
+  const next = state.photos[idx + delta];
+  if (next) openDetail(next.id, next);
+}
+
+// ── Favorites ─────────────────────────────────────────────
+async function toggleFavorite(photoId) {
+  try {
+    const res  = await fetch(`/api/photos/${photoId}/favorite`, { method: 'POST' });
+    const data = await res.json();
+    // Sync state
+    const photo = state.photos.find(p => p.id === photoId);
+    if (photo) photo.is_favorite = data.is_favorite;
+    // Update tile button
+    const tileFavBtn = D.photoGrid.querySelector(`.tile-fav-btn[data-id="${photoId}"]`);
+    if (tileFavBtn) tileFavBtn.classList.toggle('favorited', data.is_favorite);
+    // Update detail fav button
+    if (state.selectedPhotoId === photoId) {
+      D.detailFav.classList.toggle('favorited', data.is_favorite);
+    }
+    // In favorites-only mode, remove the tile if un-favorited
+    if (state.favoritesOnly && !data.is_favorite) {
+      const tile = D.photoGrid.querySelector(`.photo-tile[data-photo-id="${photoId}"]`);
+      if (tile) tile.remove();
+    }
+  } catch (_) { toast('Failed to update favorite.', 'error'); }
+}
+
+// ── Lightbox ──────────────────────────────────────────────
+function openLightbox() {
+  if (!state.selectedPhotoId) return;
+  state.lightboxScale = 1;
+  D.lightboxImg.style.transform = 'scale(1)';
+  D.lightboxImg.classList.remove('zoomed');
+  D.lightboxImg.src = `/api/photos/${state.selectedPhotoId}/image`;
+  D.lightbox.hidden = false;
+}
+
+function closeLightbox() {
+  D.lightbox.hidden = true;
+  D.lightboxImg.src = '';
+  state.lightboxScale = 1;
+}
+
+function initLightboxZoom() {
+  // Scroll to zoom
+  D.lightboxImg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.15 : 0.15;
+    state.lightboxScale = Math.max(1, Math.min(6, state.lightboxScale + delta));
+    D.lightboxImg.style.transform = `scale(${state.lightboxScale})`;
+    D.lightboxImg.classList.toggle('zoomed', state.lightboxScale > 1);
+  }, { passive: false });
+
+  // Click to toggle zoom
+  D.lightboxImg.addEventListener('click', e => {
+    e.stopPropagation();
+    if (state.lightboxScale > 1) {
+      state.lightboxScale = 1;
+      D.lightboxImg.classList.remove('zoomed');
+    } else {
+      state.lightboxScale = 2.5;
+      D.lightboxImg.classList.add('zoomed');
+    }
+    D.lightboxImg.style.transform = `scale(${state.lightboxScale})`;
+  });
+
+  // Pinch to zoom
+  D.lightbox.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+      state.lightboxPinchDist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY,
+      );
+    }
+  }, { passive: true });
+  D.lightbox.addEventListener('touchmove', e => {
+    if (e.touches.length === 2 && state.lightboxPinchDist) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY,
+      );
+      state.lightboxScale = Math.max(1, Math.min(6, state.lightboxScale * (dist / state.lightboxPinchDist)));
+      state.lightboxPinchDist = dist;
+      D.lightboxImg.style.transform = `scale(${state.lightboxScale})`;
+      D.lightboxImg.classList.toggle('zoomed', state.lightboxScale > 1);
+    }
+  }, { passive: true });
+  D.lightbox.addEventListener('touchend', () => { state.lightboxPinchDist = null; }, { passive: true });
+}
+
+// ── Swipe gestures on detail panel (mobile) ───────────────
+function initSwipe() {
+  let sx = 0, sy = 0;
+  D.detailPanel.addEventListener('touchstart', e => {
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+  }, { passive: true });
+  D.detailPanel.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dy) > 80 && Math.abs(dy) > Math.abs(dx) && dy > 0) {
+      closeDetail();                          // swipe down → close
+    } else if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+      navPhoto(dx < 0 ? 1 : -1);             // swipe left = next, right = prev
+    }
+  }, { passive: true });
 }
 
 function renderMeta(photo) {
@@ -790,6 +960,9 @@ function init() {
 
   // Detail panel
   D.closeDetail.addEventListener('click', closeDetail);
+  D.detailPrev.addEventListener('click', () => navPhoto(-1));
+  D.detailNext.addEventListener('click', () => navPhoto(1));
+  D.detailFav.addEventListener('click', () => toggleFavorite(state.selectedPhotoId));
   D.bboxToggle.addEventListener('click', () => {
     state.showBboxes = !state.showBboxes;
     D.bboxToggle.textContent = state.showBboxes ? 'Hide boxes' : 'Show boxes';
@@ -814,10 +987,24 @@ function init() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', e => {
+    // Don't fire when typing in an input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
     if (e.key === 'Escape') {
-      if (!D.importDialog.hidden)  { closeImportDialog();  return; }
-      if (!D.renameDialog.hidden)  { closeRenameDialog();  return; }
-      if (!D.detailPanel.hidden)   { closeDetail();         return; }
+      if (!D.lightbox.hidden)      { closeLightbox();       return; }
+      if (!D.importDialog.hidden)  { closeImportDialog();   return; }
+      if (!D.renameDialog.hidden)  { closeRenameDialog();   return; }
+      if (!D.detailPanel.hidden)   { closeDetail();          return; }
+    }
+    if (!D.lightbox.hidden) {
+      if (e.key === 'ArrowLeft')  { navPhoto(-1); D.lightboxImg.src = `/api/photos/${state.selectedPhotoId}/image`; return; }
+      if (e.key === 'ArrowRight') { navPhoto(1);  D.lightboxImg.src = `/api/photos/${state.selectedPhotoId}/image`; return; }
+    }
+    if (!D.detailPanel.hidden) {
+      if (e.key === 'ArrowLeft')  { navPhoto(-1); return; }
+      if (e.key === 'ArrowRight') { navPhoto(1);  return; }
+      if (e.key === 'f' || e.key === 'F') { toggleFavorite(state.selectedPhotoId); return; }
+      if (e.key === 'Enter')      { openLightbox(); return; }
     }
     // Close sidebar overlay on outside click (mobile)
     if (D.sidebar.classList.contains('open') &&
@@ -848,6 +1035,35 @@ function init() {
       localStorage.setItem('tileSize', v);
     });
   }
+
+  // Lightbox
+  D.lightboxClose.addEventListener('click', closeLightbox);
+  D.lightboxOverlay = $('lightbox-overlay');
+  D.lightboxOverlay.addEventListener('click', closeLightbox);
+  D.lightboxPrev.addEventListener('click', e => {
+    e.stopPropagation();
+    navPhoto(-1);
+    if (state.selectedPhotoId) D.lightboxImg.src = `/api/photos/${state.selectedPhotoId}/image`;
+  });
+  D.lightboxNext.addEventListener('click', e => {
+    e.stopPropagation();
+    navPhoto(1);
+    if (state.selectedPhotoId) D.lightboxImg.src = `/api/photos/${state.selectedPhotoId}/image`;
+  });
+  initLightboxZoom();
+
+  // Swipe gestures on detail panel
+  initSwipe();
+
+  // Filter chips bar
+  D.filterChipsBar.querySelectorAll('.filter-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      D.filterChipsBar.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.favoritesOnly = btn.dataset.filter === 'favorites';
+      resetAndLoad();
+    });
+  });
 
   // Infinite scroll sentinel
   initScrollObserver();

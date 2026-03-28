@@ -23,6 +23,7 @@ class Photo(Base):
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
     file_size = Column(Integer, nullable=True)   # bytes
+    is_favorite = Column(Boolean, nullable=False, default=False, server_default='0')
     imported_at = Column(DateTime, default=datetime.utcnow)
 
     tags = relationship("Tag", back_populates="photo", cascade="all, delete-orphan")

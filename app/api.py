@@ -94,6 +94,7 @@ def _photo_dict(p: Photo) -> dict:
         "lat":          p.lat,
         "lng":          p.lng,
         "camera_model": p.camera_model,
+        "is_favorite":  bool(p.is_favorite),
     }
 
 
@@ -103,11 +104,14 @@ def list_photos(
     filters: str = "{}",
     page: int    = 1,
     page_size: int = 120,
+    favorite: bool = False,
 ):
     session = get_session()
     try:
         f = json.loads(filters)
         photos = search_photos(session, f) if any(f.values()) else session.query(Photo).all()
+        if favorite:
+            photos = [p for p in photos if p.is_favorite]
 
         # Sort
         dated   = [(p, p.date_taken) for p in photos if p.date_taken]
@@ -164,6 +168,20 @@ async def photo_image(photo_id: int):
             raise HTTPException(404)
         return FileResponse(photo.file_path,
                             headers={"Cache-Control": "max-age=3600"})
+    finally:
+        session.close()
+
+
+@app.post("/api/photos/{photo_id}/favorite")
+def toggle_favorite(photo_id: int):
+    session = get_session()
+    try:
+        photo = session.get(Photo, photo_id)
+        if not photo:
+            raise HTTPException(404)
+        photo.is_favorite = not photo.is_favorite
+        session.commit()
+        return {"is_favorite": bool(photo.is_favorite)}
     finally:
         session.close()
 

@@ -90,6 +90,15 @@
         <div id="ph-chips"></div>
       </div>
 
+      <!-- Filter chips bar -->
+      <div id="filter-chips-bar">
+        <button class="filter-chip active" data-filter="all">All</button>
+        <button class="filter-chip" data-filter="favorites">
+          <svg viewBox="0 0 24 24" width="12" height="12" style="vertical-align:-1px"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          Favorites
+        </button>
+      </div>
+
       <!-- Controls bar -->
       <div id="gallery-controls">
         <select id="sort-select">
@@ -132,7 +141,16 @@
       <button class="icon-btn" id="close-detail" aria-label="Close">
         <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
       </button>
+      <button class="icon-btn" id="detail-prev" aria-label="Previous photo" title="Previous (←)">
+        <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+      </button>
+      <button class="icon-btn" id="detail-next" aria-label="Next photo" title="Next (→)">
+        <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+      </button>
       <span id="detail-filename"></span>
+      <button class="icon-btn" id="detail-fav" aria-label="Favorite" title="Favorite (f)">
+        <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+      </button>
       <button id="bbox-toggle" hidden>Hide boxes</button>
     </div>
 
@@ -217,6 +235,21 @@
     <span>Map</span>
   </button>
 </nav>
+
+<!-- ─── Lightbox ──────────────────────────────────────────────────── -->
+<div id="lightbox" hidden>
+  <div id="lightbox-overlay"></div>
+  <img id="lightbox-img" alt="" draggable="false">
+  <button class="icon-btn" id="lightbox-close" aria-label="Close lightbox">
+    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+  </button>
+  <button class="icon-btn lightbox-nav" id="lightbox-prev" aria-label="Previous">
+    <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+  </button>
+  <button class="icon-btn lightbox-nav" id="lightbox-next" aria-label="Next">
+    <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+  </button>
+</div>
 
 <script src="/static/app.js"></script>
 </body>
