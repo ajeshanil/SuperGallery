@@ -18,27 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # Suppress Qt CSS warnings that may appear from any remaining Qt imports
 os.environ.setdefault("QT_LOGGING_RULES", "qt.gui.styleparser.warning=false")
 
-# Pre-load AI libraries in the main thread before uvicorn spins up worker threads.
-# On Windows, DLL initialisation fails when a DLL is first loaded from a non-main
-# thread — importing here ensures all torch/ultralytics/facenet DLLs are resident
-# in the process before any background task tries to use them.
-try:
-    import torch as _torch  # noqa: F401
-except Exception:
-    pass
-try:
-    from ultralytics import YOLO as _YOLO  # noqa: F401
-except Exception:
-    pass
-try:
-    import torchvision as _tv  # noqa: F401
-except Exception:
-    pass
-try:
-    from facenet_pytorch import MTCNN as _MTCNN  # noqa: F401
-except Exception:
-    pass
-
 import uvicorn
 
 PORT = 8432
@@ -63,7 +42,20 @@ if __name__ == "__main__":
         os.environ["SG_TEST_LIMIT"] = str(args.test)
         print(f"\n  ⚠  TEST MODE — AI analysis limited to first {args.test} photos\n")
 
+    def _preload_ai():
+        """Load AI DLLs in background after uvicorn is up.
+        On Windows, DLLs must be loaded from the main thread first — we do it
+        here in a daemon thread shortly after startup so the browser opens fast."""
+        import time
+        time.sleep(2)   # let uvicorn fully bind first
+        for _mod in ("torch", "torchvision", "ultralytics", "facenet_pytorch"):
+            try:
+                __import__(_mod)
+            except Exception:
+                pass
+
     threading.Thread(target=_open_browser, daemon=True).start()
+    threading.Thread(target=_preload_ai, daemon=True).start()
     print(f"\n  SuperGallery running at {URL}\n")
     uvicorn.run(
         "app.api:app",

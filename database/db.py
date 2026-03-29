@@ -40,13 +40,24 @@ def init_db() -> None:
     global _SessionFactory
     _SessionFactory = sessionmaker(bind=engine)
 
-    # SQLite doesn't support ALTER COLUMN — add new nullable columns if missing
+    # SQLite migrations — add columns and indexes if missing
     from sqlalchemy import text as _sa_text
     with engine.connect() as _conn:
         _cols = [row[1] for row in _conn.execute(_sa_text("PRAGMA table_info(photos)"))]
         if "dhash" not in _cols:
             _conn.execute(_sa_text("ALTER TABLE photos ADD COLUMN dhash TEXT"))
             _conn.commit()
+        # Performance indexes (idempotent — IF NOT EXISTS)
+        _conn.execute(_sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_photos_date ON photos(date_taken DESC)"
+        ))
+        _conn.execute(_sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_tags_cat_label ON tags(category, label)"
+        ))
+        _conn.execute(_sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_tags_photo ON tags(photo_id)"
+        ))
+        _conn.commit()
 
 
 def get_session() -> Session:

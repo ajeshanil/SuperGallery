@@ -147,9 +147,32 @@ const TAG_CAT_ORDER = ['People','Objects','Scenes','Camera','Date','Location','P
 let _tagCounts = {};       // { category: [{label, count}, …] }
 let _activeCat = 'Objects';
 
+let _tagSummary = {};   // { category: distinctLabelCount }
+
 async function loadTagCounts() {
+  // Only fetch a lightweight summary (category names + label counts) on startup.
+  // Full chip data for each category is fetched lazily when the user clicks a tab.
   try {
-    _tagCounts = await fetch('/api/tags/counts').then(r => r.json());
+    const data = await fetch('/api/tags/counts').then(r => r.json());
+    _tagSummary = data._summary || {};
+    // Seed _tagCounts with empty arrays for categories not yet fetched
+    Object.keys(_tagSummary).forEach(c => {
+      if (!_tagCounts[c]) _tagCounts[c] = null;   // null = not yet fetched
+    });
+    renderTagBrowser();
+  } catch(_) {}
+}
+
+async function loadTagCategory(cat) {
+  // Lazy-fetch chips for a single category
+  if (_tagCounts[cat] && _tagCounts[cat] !== null) {
+    renderTagBrowser();
+    return;
+  }
+  $('tag-chips-row').innerHTML = '<span style="color:var(--text3);font-size:12px;padding:4px 8px">Loading…</span>';
+  try {
+    const data = await fetch(`/api/tags/counts?category=${encodeURIComponent(cat)}`).then(r => r.json());
+    _tagCounts[cat] = data[cat] || [];
     renderTagBrowser();
   } catch(_) {}
 }
@@ -159,8 +182,8 @@ function renderTagBrowser() {
   const chipsRow = $('tag-chips-row');
   const clearBtn = $('tag-clear-btn');
 
-  // Category tabs — only show categories that have data
-  const cats = TAG_CAT_ORDER.filter(c => _tagCounts[c] && _tagCounts[c].length > 0);
+  // Category tabs — show categories that have data (from summary)
+  const cats = TAG_CAT_ORDER.filter(c => _tagSummary[c] > 0 || (_tagCounts[c] && _tagCounts[c].length > 0));
   catTabs.innerHTML = cats.map(c => {
     const activeFilters = state.tagFilters[c] && state.tagFilters[c].length > 0;
     return `<button class="tag-cat-btn${_activeCat === c ? ' active' : ''}" data-cat="${c}">
@@ -170,22 +193,28 @@ function renderTagBrowser() {
   catTabs.querySelectorAll('.tag-cat-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       _activeCat = btn.dataset.cat;
-      renderTagBrowser();
+      loadTagCategory(_activeCat);
     });
   });
 
-  // Chips for active category
-  const items = _tagCounts[_activeCat] || [];
-  const activeFiltersForCat = state.tagFilters[_activeCat] || [];
-  chipsRow.innerHTML = items.map(({label, count}) => {
-    const isActive = activeFiltersForCat.includes(label);
-    return `<button class="tag-chip${isActive ? ' active' : ''}" data-label="${label}">
-      ${label} <span class="chip-cnt">${count}</span>
-    </button>`;
-  }).join('');
-  chipsRow.querySelectorAll('.tag-chip').forEach(btn => {
-    btn.addEventListener('click', () => toggleTagFilter(_activeCat, btn.dataset.label));
-  });
+  // Chips for active category — only if already fetched
+  const items = _tagCounts[_activeCat];
+  if (items === null || items === undefined) {
+    // Not yet fetched — trigger lazy load (will re-render when done)
+    if (_activeCat) loadTagCategory(_activeCat);
+    chipsRow.innerHTML = '';
+  } else {
+    const activeFiltersForCat = state.tagFilters[_activeCat] || [];
+    chipsRow.innerHTML = items.map(({label, count}) => {
+      const isActive = activeFiltersForCat.includes(label);
+      return `<button class="tag-chip${isActive ? ' active' : ''}" data-label="${label}">
+        ${label} <span class="chip-cnt">${count}</span>
+      </button>`;
+    }).join('');
+    chipsRow.querySelectorAll('.tag-chip').forEach(btn => {
+      btn.addEventListener('click', () => toggleTagFilter(_activeCat, btn.dataset.label));
+    });
+  }
 
   // Clear button visibility
   const hasFilters = Object.values(state.tagFilters).some(arr => arr.length > 0);

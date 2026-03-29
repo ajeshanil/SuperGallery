@@ -313,21 +313,32 @@ def delete_tag(tag_id: int):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/tags/counts")
-def tag_counts():
-    """Return all (category, label) pairs with photo counts, grouped by category.
-    Used by the tag-browser panel to render clickable filter chips."""
+def tag_counts(category: str = ""):
+    """Return (label, count) pairs for the tag-browser filter panel.
+    If ?category= is given, return only that category (fast single-category fetch).
+    Otherwise return category summary: {category: count_of_distinct_labels}.
+    """
     session = get_session()
     try:
-        rows = (
-            session.query(Tag.category, Tag.label, func.count().label("cnt"))
-            .group_by(Tag.category, Tag.label)
-            .order_by(Tag.category, func.count().desc(), Tag.label)
-            .all()
-        )
-        result: dict = {}
-        for cat, lbl, cnt in rows:
-            result.setdefault(cat, []).append({"label": lbl, "count": cnt})
-        return result
+        if category:
+            # Single-category fetch — only what the user is looking at
+            rows = (
+                session.query(Tag.label, func.count().label("cnt"))
+                .filter(Tag.category == category)
+                .group_by(Tag.label)
+                .order_by(func.count().desc(), Tag.label)
+                .all()
+            )
+            return {category: [{"label": lbl, "count": cnt} for lbl, cnt in rows]}
+        else:
+            # Summary fetch — category names + distinct label counts (cheap)
+            rows = (
+                session.query(Tag.category, func.count(Tag.label.distinct()).label("cnt"))
+                .group_by(Tag.category)
+                .order_by(Tag.category)
+                .all()
+            )
+            return {"_summary": {cat: cnt for cat, cnt in rows}}
     finally:
         session.close()
 
