@@ -122,6 +122,16 @@ const D = {
   cleanupList:       $('cleanup-list'),
   cleanupCancel:     $('cleanup-cancel'),
   cleanupConfirm:    $('cleanup-confirm'),
+  // Timeline
+  viewTimeline:      $('view-timeline'),
+  timelineContainer: $('timeline-container'),
+  // Duplicates
+  viewDuplicates:      $('view-duplicates'),
+  duplicatesContainer: $('duplicates-container'),
+  dupGroupCount:       $('dup-group-count'),
+  findDuplicatesBtn:   $('find-duplicates-btn'),
+  // Person inline rename
+  phRenameBtn:       $('ph-rename-btn'),
 };
 
 // ── Scroll observer ───────────────────────────────────────
@@ -210,8 +220,16 @@ function switchView(v) {
     b.classList.toggle('active', b.dataset.view === v));
 
   // Views — use both hidden + active class (CSS uses .view.active)
-  const viewMap = { gallery: D.viewGallery, people: D.viewPeople, map: D.viewMap, albums: D.viewAlbums };
+  const viewMap = {
+    gallery:    D.viewGallery,
+    people:     D.viewPeople,
+    map:        D.viewMap,
+    albums:     D.viewAlbums,
+    timeline:   D.viewTimeline,
+    duplicates: D.viewDuplicates,
+  };
   Object.entries(viewMap).forEach(([name, el]) => {
+    if (!el) return;
     const on = name === v;
     el.hidden = !on;
     el.classList.toggle('active', on);
@@ -232,6 +250,12 @@ function switchView(v) {
   } else if (v === 'albums') {
     closeDetail();
     loadAlbums();
+  } else if (v === 'timeline') {
+    closeDetail();
+    loadTimeline();
+  } else if (v === 'duplicates') {
+    closeDetail();
+    loadDuplicates();
   }
 }
 
@@ -1017,11 +1041,12 @@ function startSSE() {
         showProgress(d);      // briefly show completion label
         setTimeout(() => {
           hideProgress();
-          const done = ['import_done','analyze_done','faces_done','thumbs_done','quality_tags_done'];
+          const done = ['import_done','analyze_done','faces_done','thumbs_done','quality_tags_done','duplicates_done'];
           if (done.includes(d.operation)) {
             if (state.view === 'gallery') resetAndLoad();  // final full refresh
             if (d.operation === 'faces_done') loadPeople();
             else if (state.view === 'people') loadPeople();
+            if (d.operation === 'duplicates_done' && state.view === 'duplicates') loadDuplicates();
             // Refresh tag browser so new tags from analysis appear as chips
             loadTagCounts();
           }
@@ -1049,6 +1074,8 @@ const OP_LABELS = {
   thumbs_done:       'Thumbnails ready',
   quality_tags:      'Quality tag backfill',
   quality_tags_done: 'Quality tags complete',
+  duplicates:        'Finding duplicates',
+  duplicates_done:   'Duplicate scan complete',
   error:             'Error',
 };
 
@@ -1431,6 +1458,217 @@ function escAttr(s) {
   return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// ── Inline person rename ──────────────────────────────────
+function startInlineRename() {
+  const el = D.phName;
+  const person = state.personFilter;
+  if (!person || el.contentEditable === 'true') return;
+
+  const originalName = person.name;
+  el.contentEditable = 'true';
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  el.classList.add('ph-editing');
+  D.phRenameBtn.textContent = 'Save';
+
+  async function saveRename() {
+    const newName = el.textContent.trim();
+    el.contentEditable = 'false';
+    el.classList.remove('ph-editing');
+    D.phRenameBtn.textContent = 'Rename';
+    cleanup();
+    if (!newName || newName === originalName) { el.textContent = originalName; return; }
+    try {
+      const res = await fetch(`/api/people/${person.id}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        state.personFilter.name = data.name;
+        el.textContent = data.name;
+        toast(`Renamed to "${data.name}"`);
+        resetAndLoad();
+      } else { el.textContent = originalName; toast('Rename failed', 'error'); }
+    } catch (_) { el.textContent = originalName; toast('Rename failed', 'error'); }
+  }
+
+  function cancelRename() {
+    el.textContent = originalName;
+    el.contentEditable = 'false';
+    el.classList.remove('ph-editing');
+    D.phRenameBtn.textContent = 'Rename';
+    cleanup();
+  }
+
+  function onKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); saveRename(); }
+    if (e.key === 'Escape') cancelRename();
+  }
+
+  function cleanup() {
+    el.removeEventListener('keydown', onKey);
+  }
+
+  el.addEventListener('keydown', onKey);
+  D.phRenameBtn.addEventListener('click', saveRename, { once: true });
+}
+
+// ── Timeline ──────────────────────────────────────────────
+async function loadTimeline() {
+  D.timelineContainer.innerHTML = '<div class="loading-msg">Loading timeline…</div>';
+  try {
+    const groups = await fetch('/api/timeline').then(r => r.json());
+    renderTimeline(groups);
+  } catch (_) {
+    D.timelineContainer.innerHTML = '<div class="empty-msg">Could not load timeline.</div>';
+  }
+}
+
+function renderTimeline(groups) {
+  if (!groups.length) {
+    D.timelineContainer.innerHTML =
+      '<div class="empty-msg">No photos with date information found.</div>';
+    return;
+  }
+  const allIds = groups.flatMap(g => g.photo_ids);
+  D.timelineContainer.innerHTML = '';
+
+  groups.forEach(group => {
+    const hdr = document.createElement('div');
+    hdr.className = 'timeline-month-hdr';
+    hdr.textContent = `${group.label}  ·  ${group.count} photo${group.count === 1 ? '' : 's'}`;
+    D.timelineContainer.appendChild(hdr);
+
+    const row = document.createElement('div');
+    row.className = 'timeline-row';
+
+    group.photo_ids.forEach(photoId => {
+      const tile = document.createElement('div');
+      tile.className = 'photo-tile timeline-tile';
+      tile.dataset.id = photoId;
+
+      const img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+
+      const obs = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) {
+          img.src = `/api/photos/${photoId}/thumb`;
+          obs.disconnect();
+        }
+      }, { rootMargin: '400px' });
+      obs.observe(tile);
+
+      tile.appendChild(img);
+      tile.addEventListener('click', () => {
+        state.photos = allIds.map(id => ({ id }));
+        openDetail(photoId);
+      });
+      row.appendChild(tile);
+    });
+
+    D.timelineContainer.appendChild(row);
+  });
+}
+
+// ── Duplicates ────────────────────────────────────────────
+async function startFindDuplicates() {
+  D.findDuplicatesBtn.disabled = true;
+  D.findDuplicatesBtn.textContent = 'Scanning…';
+  try {
+    const data = await fetch('/api/admin/find-duplicates', { method: 'POST' }).then(r => r.json());
+    if (data.error) toast(data.error, 'error');
+    else toast('Duplicate scan started — check Duplicates view when done.');
+  } catch (_) { toast('Request failed.', 'error'); }
+  finally {
+    D.findDuplicatesBtn.disabled = false;
+    D.findDuplicatesBtn.textContent = 'Find Duplicates';
+  }
+}
+
+async function loadDuplicates() {
+  D.duplicatesContainer.innerHTML = '<div class="loading-msg">Loading…</div>';
+  D.dupGroupCount.textContent = '';
+  try {
+    const groups = await fetch('/api/duplicates').then(r => r.json());
+    renderDuplicates(groups);
+  } catch (_) {
+    D.duplicatesContainer.innerHTML = '<div class="empty-msg">Could not load duplicates.</div>';
+  }
+}
+
+function renderDuplicates(groups) {
+  if (!groups.length) {
+    D.dupGroupCount.textContent = '';
+    D.duplicatesContainer.innerHTML =
+      '<div class="empty-msg">No duplicate groups found.<br>' +
+      '<small>Click "Find Duplicates" in the sidebar to scan your library.</small></div>';
+    return;
+  }
+  D.dupGroupCount.textContent = `${groups.length} group${groups.length === 1 ? '' : 's'}`;
+  D.duplicatesContainer.innerHTML = '';
+
+  groups.forEach(group => {
+    const card = document.createElement('div');
+    card.className = 'dup-group';
+
+    const photosHtml = group.photos.map(p =>
+      `<div class="dup-photo" data-photo-id="${p.id}">
+        <img src="${p.thumb}" alt="${escAttr(p.filename)}" loading="lazy">
+        <div class="dup-photo-name">${escHtml(p.filename)}</div>
+        <div class="dup-photo-meta">
+          ${p.date_taken ? new Date(p.date_taken).toLocaleDateString('en-GB', {dateStyle:'medium'}) : 'No date'}
+          ${p.file_size ? ' · ' + Math.round(p.file_size / 1024) + ' KB' : ''}
+        </div>
+        <button class="btn-accent dup-keep-btn" data-id="${p.id}">Keep this</button>
+      </div>`
+    ).join('');
+
+    card.innerHTML =
+      `<div class="dup-photos">${photosHtml}</div>
+       <div class="dup-actions">
+         <button class="btn-ghost dup-dismiss-btn">Dismiss (keep all)</button>
+       </div>`;
+
+    card.querySelectorAll('.dup-keep-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const keepId = +btn.dataset.id;
+        const deleteIds = group.photos.map(p => p.id).filter(id => id !== keepId);
+        if (!confirm(`Permanently delete ${deleteIds.length} photo${deleteIds.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+        try {
+          const res = await fetch('/api/photos/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ photo_ids: deleteIds }),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            toast(`Deleted ${data.deleted} photo${data.deleted === 1 ? '' : 's'}`);
+            card.style.transition = 'opacity .3s';
+            card.style.opacity = '0';
+            setTimeout(() => card.remove(), 320);
+          } else toast('Delete failed', 'error');
+        } catch (_) { toast('Delete failed', 'error'); }
+      });
+    });
+
+    card.querySelector('.dup-dismiss-btn').addEventListener('click', () => {
+      card.style.transition = 'opacity .3s';
+      card.style.opacity = '0';
+      setTimeout(() => card.remove(), 320);
+    });
+
+    D.duplicatesContainer.appendChild(card);
+  });
+}
+
 // ── Event wiring ──────────────────────────────────────────
 function init() {
   // View nav buttons (sidebar + bottom nav)
@@ -1521,6 +1759,12 @@ function init() {
 
   // Quality tags
   D.runQualityTagsBtn.addEventListener('click', runQualityTagsBackfill);
+
+  // Find duplicates
+  if (D.findDuplicatesBtn) D.findDuplicatesBtn.addEventListener('click', startFindDuplicates);
+
+  // Person inline rename
+  if (D.phRenameBtn) D.phRenameBtn.addEventListener('click', startInlineRename);
 
   // People tabs
   document.querySelectorAll('.people-tab').forEach(tab => {

@@ -37,7 +37,8 @@ from sqlalchemy import func
 
 from database.db import get_session, init_db
 from database.models import (
-    Album, AlbumPhoto, Location, ObjectDetection, Photo, PhotoPerson, Person, Tag,
+    Album, AlbumPhoto, DuplicateGroup, DuplicateMember,
+    Location, ObjectDetection, Photo, PhotoPerson, Person, Tag,
 )
 from utils.search import search_photos
 
@@ -905,6 +906,231 @@ def delete_album_api(album_id: int):
         session.delete(album)
         session.commit()
         return {"ok": True}
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Timeline
+# ---------------------------------------------------------------------------
+
+@app.get("/api/timeline")
+def get_timeline():
+    """Group photos by year+month, newest first."""
+    from collections import defaultdict
+    session = get_session()
+    try:
+        rows = (
+            session.query(Photo.id, Photo.date_taken)
+            .filter(Photo.date_taken.isnot(None))
+            .order_by(Photo.date_taken.desc())
+            .all()
+        )
+        _MONTH_NAMES = [
+            '', 'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December',
+        ]
+        groups: dict = {}
+        order: list = []
+        for pid, dt in rows:
+            key = (dt.year, dt.month)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(pid)
+
+        result = []
+        for (y, m) in order:
+            ids = groups[(y, m)]
+            result.append({
+                "year": y, "month": m,
+                "label": f"{_MONTH_NAMES[m]} {y}",
+                "count": len(ids),
+                "photo_ids": ids,
+            })
+        return result
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+
+def _compute_dhash(image_path: str, hash_size: int = 8):
+    """Compute 64-bit difference hash. Returns 16-char hex string or None."""
+    try:
+        from PIL import Image as _PILImg
+        img = _PILImg.open(image_path).convert("L")
+        img = img.resize((hash_size + 1, hash_size), _PILImg.BILINEAR)
+        pixels = list(img.getdata())
+        val = 0
+        for row in range(hash_size):
+            for col in range(hash_size):
+                idx = row * (hash_size + 1) + col
+                val = (val << 1) | (1 if pixels[idx] > pixels[idx + 1] else 0)
+        return format(val, "016x")
+    except Exception as exc:
+        logger.warning("dHash failed for %s: %s", image_path, exc)
+        return None
+
+
+def _hamming(h1: str, h2: str) -> int:
+    """Hamming distance between two 16-char hex hashes."""
+    xor = int(h1, 16) ^ int(h2, 16)
+    dist = 0
+    while xor:
+        dist += xor & 1
+        xor >>= 1
+    return dist
+
+
+def _bg_find_duplicates():
+    """Compute dHash for all photos then union-find groups with Hamming distance ≤ 8."""
+    _set(running=True, operation="duplicates", op_label="Finding duplicates",
+         done=0, total=0, message="Hashing photos…", current_file="")
+    session = get_session()
+    try:
+        photos = session.query(Photo).all()
+        total = len(photos)
+        _set(total=total)
+
+        for i, photo in enumerate(photos):
+            _set(done=i + 1, current_file=Path(photo.file_path).name,
+                 message=f"Hashing {i+1}/{total}")
+            if not photo.dhash:
+                h = _compute_dhash(photo.file_path)
+                if h:
+                    photo.dhash = h
+            if i % 100 == 0:
+                session.commit()
+        session.commit()
+
+        # Clear old groups
+        session.query(DuplicateMember).delete(synchronize_session=False)
+        session.query(DuplicateGroup).delete(synchronize_session=False)
+        session.commit()
+
+        _set(message="Comparing hashes…", current_file="")
+        hashed = [(p.id, p.dhash) for p in photos if p.dhash]
+        parent = {pid: pid for pid, _ in hashed}
+
+        def _find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def _union(x, y):
+            parent[_find(x)] = _find(y)
+
+        THRESHOLD = 8
+        for i in range(len(hashed)):
+            pid1, h1 = hashed[i]
+            for j in range(i + 1, len(hashed)):
+                pid2, h2 = hashed[j]
+                if _hamming(h1, h2) <= THRESHOLD:
+                    _union(pid1, pid2)
+
+        clusters: dict[int, list[int]] = {}
+        for pid, _ in hashed:
+            root = _find(pid)
+            clusters.setdefault(root, []).append(pid)
+
+        groups_created = 0
+        for members in clusters.values():
+            if len(members) < 2:
+                continue
+            grp = DuplicateGroup()
+            session.add(grp)
+            session.flush()
+            for pid in members:
+                session.add(DuplicateMember(group_id=grp.id, photo_id=pid))
+            groups_created += 1
+
+        session.commit()
+        _set(running=False, operation="duplicates_done",
+             message=f"Found {groups_created} duplicate group(s)", current_file="")
+    except Exception as exc:
+        logger.exception("Find duplicates failed: %s", exc)
+        session.rollback()
+        _set(running=False, operation="error", message=str(exc), current_file="")
+    finally:
+        session.close()
+
+
+@app.post("/api/admin/find-duplicates")
+def find_duplicates_endpoint(background_tasks: BackgroundTasks):
+    """Start background duplicate detection via perceptual dHash."""
+    with _op_lock:
+        if _op["running"]:
+            return {"error": "Operation already running"}
+    background_tasks.add_task(_bg_find_duplicates)
+    return {"ok": True}
+
+
+@app.get("/api/duplicates")
+def list_duplicates_endpoint():
+    """Return duplicate groups from the last find-duplicates run."""
+    session = get_session()
+    try:
+        groups = session.query(DuplicateGroup).order_by(DuplicateGroup.id).all()
+        result = []
+        for grp in groups:
+            members = session.query(DuplicateMember).filter(
+                DuplicateMember.group_id == grp.id
+            ).all()
+            photos_data = []
+            for m in members:
+                p = session.get(Photo, m.photo_id)
+                if p:
+                    photos_data.append({
+                        "id": p.id,
+                        "filename": p.filename,
+                        "date_taken": p.date_taken.isoformat() if p.date_taken else None,
+                        "file_size": p.file_size,
+                        "thumb": f"/api/photos/{p.id}/thumb",
+                    })
+            if len(photos_data) >= 2:
+                result.append({"group_id": grp.id, "photos": photos_data})
+        return result
+    finally:
+        session.close()
+
+
+class _DeletePhotos(BaseModel):
+    photo_ids: list[int]
+
+
+@app.post("/api/photos/delete")
+def delete_photos_endpoint(body: _DeletePhotos):
+    """Permanently delete photo records and files. Used by duplicate resolution."""
+    if not body.photo_ids:
+        return {"ok": True, "deleted": 0}
+    session = get_session()
+    try:
+        deleted = 0
+        for photo_id in body.photo_ids:
+            photo = session.get(Photo, photo_id)
+            if not photo:
+                continue
+            # Remove DuplicateMember rows first (FK safety)
+            session.query(DuplicateMember).filter(
+                DuplicateMember.photo_id == photo_id
+            ).delete(synchronize_session=False)
+            try:
+                Path(photo.file_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            for size in [220, 160, 80]:
+                (THUMB_DIR / f"{photo_id}_{size}.jpg").unlink(missing_ok=True)
+            session.delete(photo)
+            deleted += 1
+        session.commit()
+        return {"ok": True, "deleted": deleted}
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(500, str(exc))
     finally:
         session.close()
 

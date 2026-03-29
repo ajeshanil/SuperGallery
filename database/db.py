@@ -34,10 +34,19 @@ def _get_engine():
 
 
 def init_db() -> None:
-    """Create all tables if they don't exist."""
-    Base.metadata.create_all(_get_engine())
+    """Create all tables if they don't exist, and apply lightweight column migrations."""
+    engine = _get_engine()
+    Base.metadata.create_all(engine)
     global _SessionFactory
-    _SessionFactory = sessionmaker(bind=_get_engine())
+    _SessionFactory = sessionmaker(bind=engine)
+
+    # SQLite doesn't support ALTER COLUMN — add new nullable columns if missing
+    from sqlalchemy import text as _sa_text
+    with engine.connect() as _conn:
+        _cols = [row[1] for row in _conn.execute(_sa_text("PRAGMA table_info(photos)"))]
+        if "dhash" not in _cols:
+            _conn.execute(_sa_text("ALTER TABLE photos ADD COLUMN dhash TEXT"))
+            _conn.commit()
 
 
 def get_session() -> Session:

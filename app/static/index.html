@@ -67,9 +67,21 @@
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 16V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2zm-11-4 2.03 2.71L16 11l4 5H8l3-4zM2 6v14a2 2 0 0 0 2 2h14v-2H4V6H2z"/></svg>
       Albums
     </button>
+    <button class="nav-btn" data-view="timeline">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h18v2H3zm0 8h18v2H3zm0 8h18v2H3z"/></svg>
+      Timeline
+    </button>
+    <button class="nav-btn" data-view="duplicates">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+      Duplicates
+    </button>
 
     <div class="sidebar-sep"></div>
 
+    <button class="nav-btn" id="find-duplicates-btn" title="Detect duplicate photos">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 2h12l4 4v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 2v16h14V7l-3-3H6zm3 7h8v2H9v-2zm0 4h8v2H9v-2zm0-8h5v2H9V7z"/></svg>
+      Find Duplicates
+    </button>
     <button class="nav-btn" id="run-quality-tags-btn" title="Backfill quality tags on all photos">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
       Quality Tags
@@ -99,6 +111,7 @@
         <div class="person-header-info">
           <span id="ph-name"></span>
           <span id="ph-count"></span>
+          <button id="ph-rename-btn" class="action-btn" style="margin-left:8px">Rename</button>
         </div>
         <div id="ph-chips"></div>
       </div>
@@ -171,6 +184,23 @@
         </div>
       </div>
       <div id="albums-grid"></div>
+    </div>
+
+    <!-- ── Timeline view ─────────────────────────────────────────────────── -->
+    <div id="view-timeline" class="view" hidden>
+      <div id="timeline-header">
+        <h2>Timeline</h2>
+      </div>
+      <div id="timeline-container"></div>
+    </div>
+
+    <!-- ── Duplicates view ───────────────────────────────────────────────── -->
+    <div id="view-duplicates" class="view" hidden>
+      <div id="duplicates-header">
+        <h2>Duplicates</h2>
+        <span id="dup-group-count"></span>
+      </div>
+      <div id="duplicates-container"></div>
     </div>
 
   </main>
@@ -289,6 +319,14 @@
   <button class="bnav-btn" data-view="albums">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 16V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2zm-11-4 2.03 2.71L16 11l4 5H8l3-4zM2 6v14a2 2 0 0 0 2 2h14v-2H4V6H2z"/></svg>
     <span>Albums</span>
+  </button>
+  <button class="bnav-btn" data-view="timeline">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h18v2H3zm0 8h18v2H3zm0 8h18v2H3z"/></svg>
+    <span>Timeline</span>
+  </button>
+  <button class="bnav-btn" data-view="duplicates">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+    <span>Dups</span>
   </button>
 </nav>
 

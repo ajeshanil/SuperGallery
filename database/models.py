@@ -25,6 +25,7 @@ class Photo(Base):
     file_size = Column(Integer, nullable=True)   # bytes
     is_favorite = Column(Boolean, nullable=False, default=False, server_default='0')
     imported_at = Column(DateTime, default=datetime.utcnow)
+    dhash = Column(String(16), nullable=True)   # 64-bit perceptual hash (16-char hex)
 
     tags = relationship("Tag", back_populates="photo", cascade="all, delete-orphan")
     people = relationship("PhotoPerson", back_populates="photo", cascade="all, delete-orphan")
@@ -125,3 +126,18 @@ class AlbumPhoto(Base):
     album_id = Column(Integer, ForeignKey("albums.id"), nullable=False)
     photo_id = Column(Integer, ForeignKey("photos.id"), nullable=False)
     sort_order = Column(Integer, nullable=True, default=0)
+
+
+class DuplicateGroup(Base):
+    __tablename__ = "duplicate_groups"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DuplicateMember(Base):
+    __tablename__ = "duplicate_members"
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("duplicate_groups.id"), nullable=False)
+    photo_id = Column(Integer, ForeignKey("photos.id"), nullable=False)
