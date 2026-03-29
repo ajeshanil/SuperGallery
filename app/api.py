@@ -581,11 +581,11 @@ def similar_people():
                 # Only surface pairs that are genuinely close — high enough that a
                 # human should verify, but below the level where clustering would
                 # have already merged them.
-                # cosine similarity > 0.70: faces look noticeably alike (same person
+                # cosine similarity > 0.55: faces look noticeably alike (same person
                 #   with different angle/lighting, or close family members).
                 # cosine similarity < 0.92: below this they'd likely already be in
                 #   the same cluster or are clearly identical shots.
-                if 0.70 < sim < 0.92:
+                if 0.55 < sim < 0.92:
                     pairs.append({
                         "person_a": p1.id, "name_a": p1.name,
                         "person_b": p2.id, "name_b": p2.name,

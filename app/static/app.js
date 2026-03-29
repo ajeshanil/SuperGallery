@@ -728,58 +728,78 @@ async function loadPeople() {
   }
 }
 
+let _simPairs = [];
+let _simIdx = 0;
+
 async function loadSimilarFaces() {
   const grid = $('similar-grid');
-  grid.innerHTML = '<div class="loading-msg">Loading similar faces\u2026</div>';
+  grid.innerHTML = '<div class="loading-msg">Loading…</div>';
   try {
     const pairs = await fetch('/api/people/similar').then(r => r.json());
-    if (!pairs.length) {
-      grid.innerHTML = '<div class="empty-msg">No similar face pairs found.<br><small>As more people are identified, potential matches will appear here for review.</small></div>';
-      return;
-    }
-    grid.innerHTML = pairs.map((p, idx) => `
-      <div class="sim-pair" data-idx="${idx}">
-        <div class="sim-face">
-          <img src="/api/people/${p.person_a}/thumb" onerror="this.style.opacity=0.3">
-          <span>${escHtml(p.name_a)}</span>
-        </div>
-        <div class="sim-vs">\u2194</div>
-        <div class="sim-face">
-          <img src="/api/people/${p.person_b}/thumb" onerror="this.style.opacity=0.3">
-          <span>${escHtml(p.name_b)}</span>
-        </div>
-        <div class="sim-actions">
-          <button class="sim-same-btn" data-keep="${p.person_a}" data-remove="${p.person_b}">Same Person</button>
-          <button class="sim-diff-btn">Not Same</button>
-          <div class="sim-score">${Math.round(p.similarity * 100)}% similar</div>
-        </div>
-      </div>
-    `).join('');
-    grid.querySelectorAll('.sim-same-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const pair = btn.closest('.sim-pair');
-        btn.disabled = true; btn.textContent = 'Merging\u2026';
-        try {
-          await fetch('/api/people/merge', {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ keep_id: +btn.dataset.keep, remove_id: +btn.dataset.remove }),
-          });
-          pair.style.opacity = '0'; pair.style.transition = 'opacity .3s';
-          setTimeout(() => pair.remove(), 300);
-          loadPeople();
-        } catch(_) { btn.disabled = false; btn.textContent = 'Same Person'; }
-      });
-    });
-    grid.querySelectorAll('.sim-diff-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const pair = btn.closest('.sim-pair');
-        pair.style.opacity = '0'; pair.style.transition = 'opacity .3s';
-        setTimeout(() => pair.remove(), 300);
-      });
-    });
+    _simPairs = Array.isArray(pairs) ? pairs : [];
+    _simIdx = 0;
+    renderSimCard();
   } catch(_) {
     grid.innerHTML = '<div class="empty-msg">Could not load similar faces.</div>';
   }
+}
+
+function renderSimCard() {
+  const grid = $('similar-grid');
+  if (!_simPairs.length) {
+    grid.innerHTML = '<div class="empty-msg">No similar face pairs found.<br><small>Similar-looking people will appear here for review after face processing.</small></div>';
+    return;
+  }
+  // Skip already-dismissed pairs
+  while (_simIdx < _simPairs.length && _simPairs[_simIdx]._dismissed) _simIdx++;
+  if (_simIdx >= _simPairs.length) {
+    grid.innerHTML = '<div class="empty-msg">All pairs reviewed ✓</div>';
+    return;
+  }
+  const p = _simPairs[_simIdx];
+  const remaining = _simPairs.filter(x => !x._dismissed).length;
+  grid.innerHTML = `
+    <div class="sim-card">
+      <div class="sim-card-counter">${_simIdx + 1} of ${remaining} pair${remaining === 1 ? '' : 's'}</div>
+      <div class="sim-card-faces">
+        <div class="sim-card-face">
+          <img src="/api/people/${p.person_a}/thumb" onerror="this.style.opacity=0.2" alt="">
+          <div class="sim-card-name">${escHtml(p.name_a)}</div>
+        </div>
+        <div class="sim-card-vs">↔</div>
+        <div class="sim-card-face">
+          <img src="/api/people/${p.person_b}/thumb" onerror="this.style.opacity=0.2" alt="">
+          <div class="sim-card-name">${escHtml(p.name_b)}</div>
+        </div>
+      </div>
+      <div class="sim-card-score">${Math.round(p.similarity * 100)}% similar</div>
+      <div class="sim-card-actions">
+        <button class="sim-yes-btn">✓ Same Person — Merge</button>
+        <button class="sim-no-btn">✗ Not the Same</button>
+      </div>
+    </div>`;
+
+  grid.querySelector('.sim-yes-btn').addEventListener('click', async () => {
+    const btn = grid.querySelector('.sim-yes-btn');
+    btn.disabled = true; btn.textContent = 'Merging…';
+    try {
+      await fetch('/api/people/merge', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ keep_id: p.person_a, remove_id: p.person_b }),
+      });
+      toast(`Merged ${p.name_a} & ${p.name_b}`);
+      _simPairs[_simIdx]._dismissed = true;
+      _simIdx++;
+      renderSimCard();
+      loadPeople();
+    } catch(_) { btn.disabled = false; btn.textContent = '✓ Same Person — Merge'; }
+  });
+
+  grid.querySelector('.sim-no-btn').addEventListener('click', () => {
+    _simPairs[_simIdx]._dismissed = true;
+    _simIdx++;
+    renderSimCard();
+  });
 }
 
 async function deletePerson(id) {
@@ -797,6 +817,11 @@ function renderPeopleGrid(people) {
       '<div class="empty-msg">No people identified yet.<br>Import photos and run face processing.</div>';
     return;
   }
+
+  // Sort by photo count descending, then name ascending
+  people = [...people].sort((a, b) =>
+    (b.photo_count || 0) - (a.photo_count || 0) || (a.name || '').localeCompare(b.name || '')
+  );
 
   D.peopleGrid.innerHTML = people.map(p =>
     `<div class="person-card" data-id="${p.id}" data-name="${escAttr(p.name || '')}">
