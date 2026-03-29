@@ -335,7 +335,10 @@ body.progress-active { --progress-bar-h: 28px; }
   transition: transform .22s cubic-bezier(.4,0,.2,1);
 }
 #detail-panel:not([hidden]) { transform: translateX(0); }
-#detail-panel[hidden] { display: none; }
+#detail-panel[hidden]    { display: none; }
+#view-timeline[hidden]   { display: none; }
+#view-duplicates[hidden] { display: none; }
+#view-albums[hidden]     { display: none; }
 
 #detail-header {
   display: flex; align-items: center; gap: 6px;
